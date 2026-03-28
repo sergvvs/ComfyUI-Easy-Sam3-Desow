@@ -140,7 +140,7 @@ def masks_to_tensor(masks: Union[torch.Tensor, Image.Image, List, np.ndarray]) -
 
     return masks
 
-def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, stroke_width=5, font_size=24):
+def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, stroke_width=5, font_size=24, labels=None):
 
     if isinstance(image, torch.Tensor):
         # tensor_to_pil returns a list, get the first image
@@ -225,31 +225,34 @@ def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, strok
             # Convert stroke_color to int tuple for background box
             stroke_color_int = tuple((stroke_color * 255).astype(int).tolist())
 
-            # Prepare text with score if available
+            # Get label for this mask if available
+            label = None
+            if labels is not None and isinstance(labels, list) and i < len(labels):
+                label = labels[i] if labels[i] else None
+
+            # Build text: prefer "Label score:0.96", fallback to "id:N score:0.96"
             if scores is not None:
                 try:
-                    # Handle different score formats
                     if isinstance(scores, torch.Tensor):
-                        # Flatten tensor and get the i-th score
                         scores_flat = scores.flatten()
                         if i < len(scores_flat):
                             score = scores_flat[i].item()
-                            text = f"id:{i} score:{score:.2f}"
+                            text = f"{label} {score:.2f}" if label else f"id:{i} score:{score:.2f}"
                         else:
-                            text = f"id:{i}"
+                            text = label or f"id:{i}"
                     elif isinstance(scores, (list, np.ndarray)):
                         score = scores[i] if isinstance(scores[i], (int, float)) else scores[i].item()
-                        text = f"id:{i} score:{score:.2f}"
+                        text = f"{label} {score:.2f}" if label else f"id:{i} score:{score:.2f}"
                     elif isinstance(scores, float):
                         score = scores
-                        text = f"id:{i} score:{score:.2f}"
+                        text = f"{label} {score:.2f}" if label else f"id:{i} score:{score:.2f}"
                     else:
-                        text = f"id:{i}"
+                        text = label or f"id:{i}"
                 except Exception as e:
-                    text = f"id:{i}"
+                    text = label or f"id:{i}"
                     print(f"Error getting score {i}: {e}")
             else:
-                text = f"id:{i}"
+                text = label or f"id:{i}"
 
             # Store text info for drawing later
             text_info_list.append({

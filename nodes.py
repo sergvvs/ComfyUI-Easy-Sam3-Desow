@@ -235,6 +235,16 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     display_name="scores",
                     tooltip="Confidence scores for each detected object"
                 ),
+                io.String.Output(
+                    "labels",
+                    display_name="labels",
+                    tooltip="Text label from prompt for each detected object"
+                ),
+                io.String.Output(
+                    "labels_boxes",
+                    display_name="labels_boxes",
+                    tooltip="JSON array mapping each label to its bounding box coordinates"
+                ),
             ]
         )
 
@@ -302,6 +312,8 @@ class Sam3ImageSegmentation(io.ComfyNode):
             output_boxes = []
             output_scores = []
             output_raw_masks = []
+            output_labels = []
+            output_labels_boxes = []
 
             # Initialize progress bar
             pbar = comfy.utils.ProgressBar(num_frames)
@@ -318,10 +330,11 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     # Split by comma to support multiple prompts
                     text_prompts = [p.strip() for p in prompt_text.split(',') if p.strip()]
 
-                # Collect masks, boxes, scores from all prompts
+                # Collect masks, boxes, scores, labels from all prompts
                 all_masks = []
                 all_boxes = []
                 all_scores = []
+                all_labels = []
 
                 # Process text prompts
                 if len(text_prompts) > 0:
@@ -340,6 +353,8 @@ class Sam3ImageSegmentation(io.ComfyNode):
                             all_masks.append(prompt_masks)
                             all_boxes.append(prompt_boxes)
                             all_scores.append(prompt_scores)
+                            # Each detection from this prompt gets the prompt text as label
+                            all_labels.extend([single_prompt] * len(prompt_masks))
                             logger.info(f"Prompt '{single_prompt}': detected {len(prompt_masks)} object(s)")
 
                 # Process points, bbox, mask prompts (if no text prompts were provided)
@@ -365,6 +380,8 @@ class Sam3ImageSegmentation(io.ComfyNode):
                         all_masks.append(prompt_masks)
                         all_boxes.append(prompt_boxes)
                         all_scores.append(prompt_scores)
+                        # No text prompt - empty labels for geometric-only detections
+                        all_labels.extend([""] * len(prompt_masks))
 
                 # Combine results from all prompts
                 if len(all_masks) > 0:
@@ -384,6 +401,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
                         boxes = torch.zeros(1, 4, device=device)
                     if scores is None or len(scores) == 0:
                         scores = torch.zeros(1, device=device)
+                    all_labels = [""]
                 else:
                     # Sort by scores (highest confidence first)
                     if scores is not None and len(scores) > 0:
@@ -392,11 +410,14 @@ class Sam3ImageSegmentation(io.ComfyNode):
                         masks = masks[top_indices]
                         boxes = boxes[top_indices]
                         scores = scores[top_indices]
+                        # Reorder labels to match sorted scores
+                        all_labels = [all_labels[i] for i in top_indices.cpu().tolist()]
 
                     if detection_limit > -1:
                         masks = masks[:detection_limit]
                         boxes = boxes[:detection_limit]
                         scores = scores[:detection_limit]
+                        all_labels = all_labels[:detection_limit]
 
                 output_raw_masks.append(masks)
                 # Convert masks to tensor format
@@ -436,6 +457,11 @@ class Sam3ImageSegmentation(io.ComfyNode):
 
                 output_boxes.append(boxes)
                 output_scores.append(scores)
+                output_labels.append(all_labels)
+                # Build labels_boxes: [{label: [x1,y1,x2,y2]}, ...]
+                boxes_list = boxes.tolist()
+                labels_boxes = [{all_labels[i]: boxes_list[i]} for i in range(len(all_labels))]
+                output_labels_boxes.append(labels_boxes)
 
                 # Update progress bar
                 processed_frames += 1
@@ -450,12 +476,16 @@ class Sam3ImageSegmentation(io.ComfyNode):
             output_raw_masks = torch.cat(output_raw_masks, dim=0)
             logger.debug(f"Output masks shape: {output_masks.shape} (matches input images: {B})")
 
+            # Serialize labels and labels_boxes as JSON strings
+            output_labels_json = json.dumps(output_labels, ensure_ascii=False)
+            output_labels_boxes_json = json.dumps(output_labels_boxes, ensure_ascii=False)
+
             # Clean up if not keeping model loaded
             if not keep_model_loaded:
                 model.to(offload_device)
                 mm.soft_empty_cache()
 
-        return io.NodeOutput(output_masks, output_images,output_raw_masks, output_boxes_list, output_scores_list,)
+        return io.NodeOutput(output_masks, output_images, output_raw_masks, output_boxes_list, output_scores_list, output_labels_json, output_labels_boxes_json)
 
 
 class Sam3VideoSegmentation(io.ComfyNode):
@@ -1133,7 +1163,14 @@ class Sam3Visualization(io.ComfyNode):
                     max=100,
                     step=1,
                     tooltip="Font size for confidence score text"
-                )
+                ),
+                io.String.Input(
+                    "labels",
+                    display_name="labels",
+                    optional=True,
+                    force_input=True,
+                    tooltip="JSON labels from Sam3 Image Segmentation node"
+                ),
             ],
             outputs=[
                 io.Image.Output(
@@ -1144,7 +1181,7 @@ class Sam3Visualization(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None) -> io.NodeOutput:
+    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None, labels=None) -> io.NodeOutput:
         """
         Execute visualization of masks on images.
 
@@ -1161,6 +1198,14 @@ class Sam3Visualization(io.ComfyNode):
         """
         B = image.shape[0]
 
+        # Parse labels JSON if provided
+        parsed_labels = None
+        if labels is not None and labels.strip():
+            try:
+                parsed_labels = json.loads(labels)
+            except json.JSONDecodeError:
+                parsed_labels = None
+
         # Convert images to PIL format
         pil_images = tensor_to_pil(image)
 
@@ -1170,8 +1215,14 @@ class Sam3Visualization(io.ComfyNode):
         for idx in range(B):
             pil_image = pil_images[idx]
             raw_masks = obj_masks[idx] if obj_masks is not None else None
-            # Create visualization
-            # If scores are None, `draw_visualize_image` funciton will still draw masks
+            # Get labels for this image (labels output is list of lists - one per image)
+            image_labels = None
+            if parsed_labels is not None:
+                if isinstance(parsed_labels, list) and len(parsed_labels) > idx:
+                    image_labels = parsed_labels[idx] if isinstance(parsed_labels[idx], list) else parsed_labels
+                elif isinstance(parsed_labels, list) and all(isinstance(l, str) for l in parsed_labels):
+                    image_labels = parsed_labels
+
             vis_image = draw_visualize_image(
                 pil_image,
                 raw_masks,
@@ -1179,7 +1230,8 @@ class Sam3Visualization(io.ComfyNode):
                 None,
                 alpha=alpha,
                 stroke_width=stroke_width,
-                font_size=font_size
+                font_size=font_size,
+                labels=image_labels
             )
 
             # Convert back to tensor
