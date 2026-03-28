@@ -50,12 +50,23 @@ def _box_overlap(box_a, box_b):
 
 
 def _labels_are_related(label_a, label_b):
-    """Check if one label is a substring of the other (case-insensitive)."""
+    """Check if one label appears as whole word(s) inside the other (case-insensitive).
+    'Table' in 'Coffee table' -> True (whole word match)
+    'Bed' in 'Bedside table' -> False ('Bed' is part of 'Bedside', not a whole word)
+    'Chair' in 'Armchair' -> False ('Chair' is part of 'Armchair', not a whole word)"""
     a = label_a.strip().lower()
     b = label_b.strip().lower()
     if not a or not b:
         return False
-    return a in b or b in a
+    if a == b:
+        return True
+    words_a = set(a.split())
+    words_b = set(b.split())
+    # Check if all words of shorter label appear as whole words in longer label
+    if len(words_a) <= len(words_b):
+        return words_a.issubset(words_b)
+    else:
+        return words_b.issubset(words_a)
 
 
 def _deduplicate_boxes(boxes, labels, iou_threshold, containment_threshold=0.0, containment_ratio=0.2):
