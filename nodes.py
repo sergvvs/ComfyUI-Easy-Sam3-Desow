@@ -33,6 +33,43 @@ if "sam3" not in folder_paths.folder_names_and_paths:
 from .sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
 
 
+def _compute_iou(box_a, box_b):
+    """Compute IoU between two boxes in [x1, y1, x2, y2] format."""
+    x1 = max(box_a[0], box_b[0])
+    y1 = max(box_a[1], box_b[1])
+    x2 = min(box_a[2], box_b[2])
+    y2 = min(box_a[3], box_b[3])
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _deduplicate_boxes(boxes, labels, iou_threshold):
+    """Remove overlapping boxes. When two boxes overlap above threshold,
+    keep the one with the more specific (longer) label."""
+    boxes_list = boxes.tolist()
+    n = len(boxes_list)
+    removed = set()
+    for i in range(n):
+        if i in removed:
+            continue
+        for j in range(i + 1, n):
+            if j in removed:
+                continue
+            iou = _compute_iou(boxes_list[i], boxes_list[j])
+            if iou > iou_threshold:
+                # Keep the more specific prompt (longer label text)
+                if len(labels[i]) >= len(labels[j]):
+                    removed.add(j)
+                else:
+                    removed.add(i)
+                    break
+    keep = [i for i in range(n) if i not in removed]
+    return keep
+
+
 class LoadSam3Model(io.ComfyNode):
     """Load SAM3 model for image or video segmentation."""
 
@@ -207,7 +244,23 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     min=-1,
                     max=1000,
                     tooltip="Advanced: Limit number of detections (-1 for no limit)"
-                )
+                ),
+                io.Float.Input(
+                    "box_padding_pct",
+                    default=0.0,
+                    min=0.0,
+                    max=50.0,
+                    step=0.5,
+                    tooltip="Expand each box by percentage of its own size (e.g. 1.5 = add 1.5% of box width/height on each side)"
+                ),
+                io.Float.Input(
+                    "deduplicate_iou",
+                    default=0.0,
+                    min=0.0,
+                    max=1.0,
+                    step=0.05,
+                    tooltip="Remove overlapping boxes (IoU > threshold). Keeps the more specific prompt. 0 = disabled"
+                ),
             ],
             outputs=[
                 io.Mask.Output(
@@ -249,7 +302,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
+    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, deduplicate_iou=0.0, coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
         offload_device = mm.unet_offload_device()
 
         processor = sam3_model.get("processor", None)
@@ -413,11 +466,31 @@ class Sam3ImageSegmentation(io.ComfyNode):
                         # Reorder labels to match sorted scores
                         all_labels = [all_labels[i] for i in top_indices.cpu().tolist()]
 
+                    # Deduplicate overlapping boxes - keep more specific prompt
+                    if deduplicate_iou > 0 and len(boxes) > 1:
+                        keep_indices = _deduplicate_boxes(boxes, all_labels, deduplicate_iou)
+                        masks = masks[keep_indices]
+                        boxes = boxes[keep_indices]
+                        scores = scores[keep_indices]
+                        all_labels = [all_labels[i] for i in keep_indices]
+                        logger.info(f"Image {idx}: deduplicated to {len(masks)} object(s)")
+
                     if detection_limit > -1:
                         masks = masks[:detection_limit]
                         boxes = boxes[:detection_limit]
                         scores = scores[:detection_limit]
                         all_labels = all_labels[:detection_limit]
+
+                    # Expand each box proportionally to its own size
+                    if box_padding_pct > 0:
+                        box_w = boxes[:, 2] - boxes[:, 0]
+                        box_h = boxes[:, 3] - boxes[:, 1]
+                        pad_x = box_w * (box_padding_pct / 100.0)
+                        pad_y = box_h * (box_padding_pct / 100.0)
+                        boxes[:, 0] = (boxes[:, 0] - pad_x).clamp(min=0)
+                        boxes[:, 1] = (boxes[:, 1] - pad_y).clamp(min=0)
+                        boxes[:, 2] = (boxes[:, 2] + pad_x).clamp(max=W)
+                        boxes[:, 3] = (boxes[:, 3] + pad_y).clamp(max=H)
 
                 output_raw_masks.append(masks)
                 # Convert masks to tensor format
