@@ -33,8 +33,8 @@ if "sam3" not in folder_paths.folder_names_and_paths:
 from .sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
 
 
-def _compute_iou(box_a, box_b):
-    """Compute IoU between two boxes in [x1, y1, x2, y2] format."""
+def _box_overlap(box_a, box_b):
+    """Compute IoU and IoS (intersection over smaller box) for two boxes [x1,y1,x2,y2]."""
     x1 = max(box_a[0], box_b[0])
     y1 = max(box_a[1], box_b[1])
     x2 = min(box_a[2], box_b[2])
@@ -43,12 +43,29 @@ def _compute_iou(box_a, box_b):
     area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
     area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
     union = area_a + area_b - inter
-    return inter / union if union > 0 else 0.0
+    smaller = min(area_a, area_b)
+    iou = inter / union if union > 0 else 0.0
+    ios = inter / smaller if smaller > 0 else 0.0
+    return iou, ios
+
+
+def _labels_are_related(label_a, label_b):
+    """Check if one label is a substring of the other (case-insensitive)."""
+    a = label_a.strip().lower()
+    b = label_b.strip().lower()
+    if not a or not b:
+        return False
+    return a in b or b in a
 
 
 def _deduplicate_boxes(boxes, labels, iou_threshold):
-    """Remove overlapping boxes. When two boxes overlap above threshold,
-    keep the one with the more specific (longer) label."""
+    """Smart deduplication with two rules:
+    1. Related prompts (one label contains another) + IoS > threshold
+       -> keep the more specific (longer) label. Handles: Table vs Coffee table
+    2. Unrelated prompts + very high IoU (>0.7) -> same object found by synonyms
+       -> keep higher score (already sorted). Handles: Sofa vs Couch
+    In both cases, unrelated objects inside each other (Vase on Table) are preserved."""
+    SYNONYM_IOU = 0.7
     boxes_list = boxes.tolist()
     n = len(boxes_list)
     removed = set()
@@ -58,9 +75,19 @@ def _deduplicate_boxes(boxes, labels, iou_threshold):
         for j in range(i + 1, n):
             if j in removed:
                 continue
-            iou = _compute_iou(boxes_list[i], boxes_list[j])
-            if iou > iou_threshold:
-                # Keep the more specific prompt (longer label text)
+            iou, ios = _box_overlap(boxes_list[i], boxes_list[j])
+            related = _labels_are_related(labels[i], labels[j])
+
+            should_dedup = False
+            if related and ios > iou_threshold:
+                # Rule 1: related prompts (Plant vs Potted plant) - use IoS
+                should_dedup = True
+            elif not related and iou > SYNONYM_IOU:
+                # Rule 2: synonym prompts (Sofa vs Couch) found same object
+                should_dedup = True
+
+            if should_dedup:
+                # Keep the more specific (longer) label
                 if len(labels[i]) >= len(labels[j]):
                     removed.add(j)
                 else:
