@@ -59,13 +59,15 @@ def _labels_are_related(label_a, label_b):
 
 
 def _deduplicate_boxes(boxes, labels, iou_threshold):
-    """Smart deduplication with two rules:
+    """Smart deduplication with three rules:
     1. Related prompts (one label contains another) + IoS > threshold
        -> keep the more specific (longer) label. Handles: Table vs Coffee table
     2. Unrelated prompts + very high IoU (>0.7) -> same object found by synonyms
        -> keep higher score (already sorted). Handles: Sofa vs Couch
-    In both cases, unrelated objects inside each other (Vase on Table) are preserved."""
+    3. Unrelated prompts + very high IoS (>0.8) -> smaller box inside larger one
+       -> keep the larger box. Handles: Potted plant inside Vase with flowers"""
     SYNONYM_IOU = 0.7
+    CONTAINMENT_IOS = 0.8
     boxes_list = boxes.tolist()
     n = len(boxes_list)
     removed = set()
@@ -79,20 +81,35 @@ def _deduplicate_boxes(boxes, labels, iou_threshold):
             related = _labels_are_related(labels[i], labels[j])
 
             should_dedup = False
+            keep_larger = False
             if related and ios > iou_threshold:
-                # Rule 1: related prompts (Plant vs Potted plant) - use IoS
+                # Rule 1: related prompts (Plant vs Potted plant) - keep longer label
                 should_dedup = True
             elif not related and iou > SYNONYM_IOU:
-                # Rule 2: synonym prompts (Sofa vs Couch) found same object
+                # Rule 2: synonym prompts (Sofa vs Couch) - keep longer label
                 should_dedup = True
+            elif not related and ios > CONTAINMENT_IOS:
+                # Rule 3: one box almost entirely inside another - keep larger box
+                should_dedup = True
+                keep_larger = True
 
             if should_dedup:
-                # Keep the more specific (longer) label
-                if len(labels[i]) >= len(labels[j]):
-                    removed.add(j)
+                if keep_larger:
+                    # Keep the box with larger area
+                    area_i = (boxes_list[i][2] - boxes_list[i][0]) * (boxes_list[i][3] - boxes_list[i][1])
+                    area_j = (boxes_list[j][2] - boxes_list[j][0]) * (boxes_list[j][3] - boxes_list[j][1])
+                    if area_i >= area_j:
+                        removed.add(j)
+                    else:
+                        removed.add(i)
+                        break
                 else:
-                    removed.add(i)
-                    break
+                    # Keep the more specific (longer) label
+                    if len(labels[i]) >= len(labels[j]):
+                        removed.add(j)
+                    else:
+                        removed.add(i)
+                        break
     keep = [i for i in range(n) if i not in removed]
     return keep
 
@@ -288,6 +305,14 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     step=0.05,
                     tooltip="Remove overlapping boxes (IoU > threshold). Keeps the more specific prompt. 0 = disabled"
                 ),
+                io.Float.Input(
+                    "min_box_size_pct",
+                    default=0.0,
+                    min=0.0,
+                    max=50.0,
+                    step=0.1,
+                    tooltip="Discard boxes smaller than this percentage of image area. 0 = disabled"
+                ),
             ],
             outputs=[
                 io.Mask.Output(
@@ -329,7 +354,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, deduplicate_iou=0.0, coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
+    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, deduplicate_iou=0.0, min_box_size_pct=0.0, coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
         offload_device = mm.unet_offload_device()
 
         processor = sam3_model.get("processor", None)
@@ -492,6 +517,21 @@ class Sam3ImageSegmentation(io.ComfyNode):
                         scores = scores[top_indices]
                         # Reorder labels to match sorted scores
                         all_labels = [all_labels[i] for i in top_indices.cpu().tolist()]
+
+                    # Filter out boxes smaller than min percentage of image area
+                    if min_box_size_pct > 0 and len(boxes) > 0:
+                        image_area = H * W
+                        min_area = image_area * (min_box_size_pct / 100.0)
+                        box_areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+                        size_keep = box_areas >= min_area
+                        if size_keep.any():
+                            removed_count = (~size_keep).sum().item()
+                            masks = masks[size_keep]
+                            boxes = boxes[size_keep]
+                            scores = scores[size_keep]
+                            all_labels = [l for l, k in zip(all_labels, size_keep.tolist()) if k]
+                            if removed_count > 0:
+                                logger.info(f"Image {idx}: removed {removed_count} small box(es) below {min_box_size_pct}% of image area")
 
                     # Deduplicate overlapping boxes - keep more specific prompt
                     if deduplicate_iou > 0 and len(boxes) > 1:
