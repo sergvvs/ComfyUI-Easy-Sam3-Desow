@@ -58,16 +58,15 @@ def _labels_are_related(label_a, label_b):
     return a in b or b in a
 
 
-def _deduplicate_boxes(boxes, labels, iou_threshold):
+def _deduplicate_boxes(boxes, labels, iou_threshold, containment_threshold=0.0):
     """Smart deduplication with three rules:
     1. Related prompts (one label contains another) + IoS > threshold
        -> keep the more specific (longer) label. Handles: Table vs Coffee table
     2. Unrelated prompts + very high IoU (>0.7) -> same object found by synonyms
        -> keep higher score (already sorted). Handles: Sofa vs Couch
-    3. Unrelated prompts + very high IoS (>0.8) -> smaller box inside larger one
+    3. Unrelated prompts + IoS > containment_threshold -> smaller box inside larger one
        -> keep the larger box. Handles: Potted plant inside Vase with flowers"""
     SYNONYM_IOU = 0.7
-    CONTAINMENT_IOS = 0.8
     boxes_list = boxes.tolist()
     n = len(boxes_list)
     removed = set()
@@ -88,7 +87,7 @@ def _deduplicate_boxes(boxes, labels, iou_threshold):
             elif not related and iou > SYNONYM_IOU:
                 # Rule 2: synonym prompts (Sofa vs Couch) - keep longer label
                 should_dedup = True
-            elif not related and ios > CONTAINMENT_IOS:
+            elif not related and containment_threshold > 0 and ios > containment_threshold:
                 # Rule 3: one box almost entirely inside another - keep larger box
                 should_dedup = True
                 keep_larger = True
@@ -313,6 +312,14 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     step=0.1,
                     tooltip="Discard boxes smaller than this percentage of image area. 0 = disabled"
                 ),
+                io.Float.Input(
+                    "containment_threshold",
+                    default=0.0,
+                    min=0.0,
+                    max=1.0,
+                    step=0.05,
+                    tooltip="Remove smaller box when it is inside a larger one (IoS > threshold). Handles Potted plant inside Vase with flowers. 0 = disabled"
+                ),
             ],
             outputs=[
                 io.Mask.Output(
@@ -354,7 +361,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, deduplicate_iou=0.0, min_box_size_pct=0.0, coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
+    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, deduplicate_iou=0.0, min_box_size_pct=0.0, containment_threshold=0.0, coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
         offload_device = mm.unet_offload_device()
 
         processor = sam3_model.get("processor", None)
@@ -535,7 +542,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
 
                     # Deduplicate overlapping boxes - keep more specific prompt
                     if deduplicate_iou > 0 and len(boxes) > 1:
-                        keep_indices = _deduplicate_boxes(boxes, all_labels, deduplicate_iou)
+                        keep_indices = _deduplicate_boxes(boxes, all_labels, deduplicate_iou, containment_threshold)
                         masks = masks[keep_indices]
                         boxes = boxes[keep_indices]
                         scores = scores[keep_indices]
