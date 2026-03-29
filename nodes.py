@@ -1436,21 +1436,34 @@ class Sam3Visualization(io.ComfyNode):
                 elif isinstance(parsed_labels, list) and all(isinstance(l, str) for l in parsed_labels):
                     image_labels = parsed_labels
 
-            # Parse boxes if provided (list of [x1,y1,x2,y2] lists)
+            # Unwrap boxes for this image: boxes arrives as [[box1, box2, ...]] per image
             image_boxes = None
             if boxes is not None:
                 try:
                     if isinstance(boxes, torch.Tensor):
                         image_boxes = boxes.tolist()
+                    elif isinstance(boxes, list) and len(boxes) > idx and isinstance(boxes[idx], list):
+                        image_boxes = boxes[idx]
                     elif isinstance(boxes, list):
                         image_boxes = boxes
                 except Exception:
                     image_boxes = None
 
+            # Unwrap scores for this image: scores arrives as [[s1, s2, ...]] per image
+            image_scores = None
+            if scores is not None:
+                try:
+                    if isinstance(scores, list) and len(scores) > idx and isinstance(scores[idx], list):
+                        image_scores = scores[idx]
+                    else:
+                        image_scores = scores
+                except Exception:
+                    image_scores = scores
+
             vis_image = draw_visualize_image(
                 pil_image,
                 raw_masks,
-                scores,
+                image_scores,
                 image_boxes,
                 alpha=alpha,
                 stroke_width=stroke_width,
