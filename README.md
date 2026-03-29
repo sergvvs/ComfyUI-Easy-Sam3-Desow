@@ -59,12 +59,21 @@ Segment objects in images using text prompts and optional geometric prompts.
 - `bboxes` (optional): Bounding boxes to guide segmentation. Format: (x_min, y_min, x_max, y_max) or (x, y, width, height)
 - `mask` (optional): Input mask for refinement
 
+**Advanced Inputs:**
+- `detection_limit`: Limit number of detections (-1 for no limit, default: -1)
+- `box_padding_pct`: Expand each box by percentage of its own size (0-50%, default: 0). E.g. 1.5 = add 1.5% of box width/height on each side
+- `deduplicate_iou`: Remove overlapping boxes. Keeps the more specific prompt. 0 = disabled (default: 0)
+- `min_box_size_pct`: Discard boxes smaller than this percentage of image area. 0 = disabled (default: 0)
+- `exclusion_pairs`: JSON string defining parent-child exclusion rules. When a child box is inside a parent box (IoS > 0.7), the child is removed. Example: `{"Wardrobe": ["Shelving", "Upper cabinets", "Lower cabinets"], "Bed": ["Pillow", "Blanket"]}`
+
 **Outputs:**
 - `masks`: Combined segmentation masks (one mask per image with all detected objects merged)
 - `images`: Segmented images with RGBA alpha channel (with optional background)
 - `obj_masks`: Individual object masks before combining (for visualization, preserves all detected objects separately)
 - `boxes`: Bounding box coordinates for each detected object [N, 4] format
 - `scores`: Confidence scores for each detected object
+- `labels`: JSON array of text labels for each detected object (matches order of boxes/scores)
+- `labels_boxes`: JSON array mapping each label to its bounding box coordinates (e.g. `[{"Sofa": [x1, y1, x2, y2]}]`)
 
 ### 3. SAM3 Video Segmentation
 Track and segment objects across video frames with advanced prompting options.

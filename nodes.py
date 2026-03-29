@@ -69,15 +69,12 @@ def _labels_are_related(label_a, label_b):
         return words_b.issubset(words_a)
 
 
-def _deduplicate_boxes(boxes, labels, iou_threshold, containment_threshold=0.0, containment_ratio=0.2):
-    """Smart deduplication with three rules:
-    1. Related prompts (one label contains another) + IoS > threshold
+def _deduplicate_boxes(boxes, labels, iou_threshold):
+    """Smart deduplication with two rules:
+    1. Related prompts (one label contains another as whole words) + IoS > threshold
        -> keep the more specific (longer) label. Handles: Table vs Coffee table
     2. Unrelated prompts + very high IoU (>0.7) -> same object found by synonyms
-       -> keep higher score (already sorted). Handles: Sofa vs Couch
-    3. Unrelated prompts + IoS > containment_threshold + area ratio > containment_ratio
-       -> keep the larger box. Handles: Potted plant inside Vase with flowers
-       Small objects inside large ones (Bowl on Table) are preserved by ratio check."""
+       -> keep longer label. Handles: Sofa vs Couch"""
     SYNONYM_IOU = 0.7
     boxes_list = boxes.tolist()
     n = len(boxes_list)
@@ -92,41 +89,68 @@ def _deduplicate_boxes(boxes, labels, iou_threshold, containment_threshold=0.0, 
             related = _labels_are_related(labels[i], labels[j])
 
             should_dedup = False
-            keep_larger = False
             if related and ios > iou_threshold:
-                # Rule 1: related prompts (Plant vs Potted plant) - keep longer label
                 should_dedup = True
             elif not related and iou > SYNONYM_IOU:
-                # Rule 2: synonym prompts (Sofa vs Couch) - keep longer label
                 should_dedup = True
-            elif not related and containment_threshold > 0 and ios > containment_threshold:
-                # Rule 3: check area ratio before removing
-                area_i = (boxes_list[i][2] - boxes_list[i][0]) * (boxes_list[i][3] - boxes_list[i][1])
-                area_j = (boxes_list[j][2] - boxes_list[j][0]) * (boxes_list[j][3] - boxes_list[j][1])
-                larger_area = max(area_i, area_j)
-                smaller_area = min(area_i, area_j)
-                ratio = smaller_area / larger_area if larger_area > 0 else 0
-                # Only deduplicate if smaller box is large enough relative to bigger one
-                if containment_ratio <= 0 or ratio >= containment_ratio:
-                    should_dedup = True
-                    keep_larger = True
 
             if should_dedup:
-                if keep_larger:
-                    if area_i >= area_j:
-                        removed.add(j)
-                    else:
-                        removed.add(i)
-                        break
+                # Keep the more specific (longer) label
+                if len(labels[i]) >= len(labels[j]):
+                    removed.add(j)
                 else:
-                    # Keep the more specific (longer) label
-                    if len(labels[i]) >= len(labels[j]):
-                        removed.add(j)
-                    else:
-                        removed.add(i)
-                        break
+                    removed.add(i)
+                    break
     keep = [i for i in range(n) if i not in removed]
     return keep
+
+
+def _apply_exclusion_pairs(boxes, labels, exclusion_json, ios_threshold=0.7):
+    """Remove child boxes that fall inside parent boxes based on explicit exclusion pairs.
+    exclusion_json: '{"Wardrobe": ["Shelving", "Upper cabinets"], "Bed": ["Pillow"]}'
+    ios_threshold: min IoS to consider child as 'inside' parent (default 0.7)"""
+    if not exclusion_json or not exclusion_json.strip():
+        return list(range(len(labels)))
+
+    try:
+        pairs = json.loads(exclusion_json)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("exclusion_pairs: invalid JSON, skipping")
+        return list(range(len(labels)))
+
+    if not isinstance(pairs, dict) or len(pairs) == 0:
+        return list(range(len(labels)))
+
+    # Normalize: parent -> set of child labels (lowercase)
+    parent_children = {}
+    for parent, children in pairs.items():
+        p = parent.strip().lower()
+        if isinstance(children, list):
+            parent_children[p] = {c.strip().lower() for c in children}
+
+    boxes_list = boxes.tolist() if hasattr(boxes, 'tolist') else list(boxes)
+    labels_lower = [l.strip().lower() for l in labels]
+    n = len(labels_lower)
+    removed = set()
+
+    for i in range(n):
+        if i in removed:
+            continue
+        parent_label = labels_lower[i]
+        if parent_label not in parent_children:
+            continue
+        children = parent_children[parent_label]
+        for j in range(n):
+            if j == i or j in removed:
+                continue
+            if labels_lower[j] in children:
+                # Check spatial containment via IoS
+                _, ios = _box_overlap(boxes_list[i], boxes_list[j])
+                if ios > ios_threshold:
+                    removed.add(j)
+                    logger.info(f"Exclusion: removed '{labels[j]}' inside '{labels[i]}' (IoS={ios:.2f})")
+
+    return [i for i in range(n) if i not in removed]
 
 
 class LoadSam3Model(io.ComfyNode):
@@ -328,21 +352,11 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     step=0.1,
                     tooltip="Discard boxes smaller than this percentage of image area. 0 = disabled"
                 ),
-                io.Float.Input(
-                    "containment_threshold",
-                    default=0.0,
-                    min=0.0,
-                    max=1.0,
-                    step=0.05,
-                    tooltip="Remove smaller box when it is inside a larger one (IoS > threshold). Handles Potted plant inside Vase with flowers. 0 = disabled"
-                ),
-                io.Float.Input(
-                    "containment_ratio",
-                    default=0.2,
-                    min=0.0,
-                    max=1.0,
-                    step=0.05,
-                    tooltip="Min area ratio (small/large) for containment rule. Below this ratio boxes are treated as separate objects (e.g. Bowl on Table). 0 = no ratio check"
+                io.String.Input(
+                    "exclusion_pairs",
+                    default="",
+                    multiline=True,
+                    tooltip='JSON: parent labels whose children should be removed when inside parent box. Example: {"Wardrobe": ["Shelving", "Upper cabinets"]}'
                 ),
             ],
             outputs=[
@@ -385,7 +399,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, deduplicate_iou=0.0, min_box_size_pct=0.0, containment_threshold=0.0, containment_ratio=0.2, coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
+    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, deduplicate_iou=0.0, min_box_size_pct=0.0, exclusion_pairs="", coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
         offload_device = mm.unet_offload_device()
 
         processor = sam3_model.get("processor", None)
@@ -566,12 +580,23 @@ class Sam3ImageSegmentation(io.ComfyNode):
 
                     # Deduplicate overlapping boxes - keep more specific prompt
                     if deduplicate_iou > 0 and len(boxes) > 1:
-                        keep_indices = _deduplicate_boxes(boxes, all_labels, deduplicate_iou, containment_threshold, containment_ratio)
+                        keep_indices = _deduplicate_boxes(boxes, all_labels, deduplicate_iou)
                         masks = masks[keep_indices]
                         boxes = boxes[keep_indices]
                         scores = scores[keep_indices]
                         all_labels = [all_labels[i] for i in keep_indices]
                         logger.info(f"Image {idx}: deduplicated to {len(masks)} object(s)")
+
+                    # Apply explicit exclusion pairs (remove children inside parent boxes)
+                    if exclusion_pairs and exclusion_pairs.strip() and len(boxes) > 1:
+                        keep_indices = _apply_exclusion_pairs(boxes, all_labels, exclusion_pairs)
+                        if len(keep_indices) < len(all_labels):
+                            removed = len(all_labels) - len(keep_indices)
+                            masks = masks[keep_indices]
+                            boxes = boxes[keep_indices]
+                            scores = scores[keep_indices]
+                            all_labels = [all_labels[i] for i in keep_indices]
+                            logger.info(f"Image {idx}: exclusion pairs removed {removed} child box(es)")
 
                     if detection_limit > -1:
                         masks = masks[:detection_limit]
