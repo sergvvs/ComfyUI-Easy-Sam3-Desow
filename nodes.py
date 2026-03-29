@@ -1367,6 +1367,12 @@ class Sam3Visualization(io.ComfyNode):
                     force_input=True,
                     tooltip="JSON labels from Sam3 Image Segmentation node"
                 ),
+                io.Combo.Input(
+                    "display_mode",
+                    options=["masks", "boxes", "both"],
+                    default="masks",
+                    tooltip="Visualization style: masks (filled overlay), boxes (bounding rectangles), both"
+                ),
             ],
             outputs=[
                 io.Image.Output(
@@ -1377,7 +1383,7 @@ class Sam3Visualization(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None, labels=None) -> io.NodeOutput:
+    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None, labels=None, display_mode="masks") -> io.NodeOutput:
         """
         Execute visualization of masks on images.
 
@@ -1432,7 +1438,8 @@ class Sam3Visualization(io.ComfyNode):
                 alpha=alpha,
                 stroke_width=stroke_width,
                 font_size=font_size,
-                labels=image_labels
+                labels=image_labels,
+                display_mode=display_mode
             )
 
             # Convert back to tensor

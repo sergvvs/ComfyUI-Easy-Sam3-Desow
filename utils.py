@@ -140,18 +140,37 @@ def masks_to_tensor(masks: Union[torch.Tensor, Image.Image, List, np.ndarray]) -
 
     return masks
 
-def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, stroke_width=5, font_size=24, labels=None):
+def _build_label_text(i, scores, labels, label):
+    """Build display text from label and score for a single detection."""
+    if scores is not None:
+        try:
+            if isinstance(scores, torch.Tensor):
+                scores_flat = scores.flatten()
+                if i < len(scores_flat):
+                    score = scores_flat[i].item()
+                    return f"{label} {score:.2f}" if label else f"id:{i} score:{score:.2f}"
+                return label or f"id:{i}"
+            elif isinstance(scores, (list, np.ndarray)):
+                score = scores[i] if isinstance(scores[i], (int, float)) else scores[i].item()
+                return f"{label} {score:.2f}" if label else f"id:{i} score:{score:.2f}"
+            elif isinstance(scores, float):
+                return f"{label} {scores:.2f}" if label else f"id:{i} score:{scores:.2f}"
+            return label or f"id:{i}"
+        except Exception as e:
+            print(f"Error getting score {i}: {e}")
+            return label or f"id:{i}"
+    return label or f"id:{i}"
+
+
+def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, stroke_width=5, font_size=24, labels=None, display_mode="masks"):
 
     if isinstance(image, torch.Tensor):
-        # tensor_to_pil returns a list, get the first image
         image = tensor_to_pil(image)[0]
     elif isinstance(image, np.ndarray):
         image = Image.fromarray((image * 255).astype(np.uint8) if image.max() <= 1.0 else image.astype(np.uint8))
 
-    # Convert to numpy for processing
     img_np = np.array(image).astype(np.float32) / 255.0
 
-    # Resize masks to image size if needed
     if isinstance(masks, torch.Tensor):
         masks_np = masks.cpu().numpy()
     else:
@@ -164,128 +183,98 @@ def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, strok
     except:
         font = ImageFont.load_default()
 
-    # Create colored overlay
     np.random.seed(42)
     overlay = img_np.copy()
-    
-    # Store text drawing info for later
+
+    show_masks = display_mode in ("masks", "both")
+    show_boxes = display_mode in ("boxes", "both")
+
     text_info_list = []
+    # Pre-generate colors for consistent coloring across modes
+    colors = [np.random.rand(3) for _ in range(len(masks_np))]
 
     num_masks = len(masks_np)
     pbar = comfy.utils.ProgressBar(num_masks)
-    processed_masks = 0
+
     for i, mask in enumerate(masks_np):
-        # Squeeze extra dimensions (masks may be [1, H, W] or [H, W])
         while mask.ndim > 2:
             mask = mask.squeeze(0)
 
-        # Resize mask to image size if needed
         if mask.shape != img_np.shape[:2]:
             from PIL import Image as PILImage
             mask_pil = PILImage.fromarray((mask * 255).astype(np.uint8))
             mask_pil = mask_pil.resize((img_np.shape[1], img_np.shape[0]), PILImage.NEAREST)
             mask = np.array(mask_pil).astype(np.float32) / 255.0
 
-        # Random color for this mask
-        color = np.random.rand(3)
-
-        # Create darker stroke color (0.4x of original color for darker effect)
+        color = colors[i]
         stroke_color = color * 0.4
 
-        # Create thick stroke using morphological operations
-        binary_mask = (mask > 0.5).astype(np.uint8)
-        # Dilate to get outer boundary (thick stroke with configurable width)
-        dilated = ndimage.binary_dilation(binary_mask, iterations=stroke_width).astype(np.float32)
-        # Stroke is the difference between dilated and original
-        stroke_mask = dilated - binary_mask
+        if show_masks:
+            # Mask fill + morphological stroke
+            binary_mask = (mask > 0.5).astype(np.uint8)
+            dilated = ndimage.binary_dilation(binary_mask, iterations=stroke_width).astype(np.float32)
+            stroke_mask = dilated - binary_mask
+            for c in range(3):
+                overlay[:, :, c] = np.where(stroke_mask > 0.5, stroke_color[c], overlay[:, :, c])
+            for c in range(3):
+                overlay[:, :, c] = np.where(mask > 0.5, overlay[:, :, c] * (1 - alpha) + color[c] * alpha, overlay[:, :, c])
 
-        # Apply stroke (darker color with full opacity, no alpha blending)
-        for c in range(3):
-            overlay[:, :, c] = np.where(
-                stroke_mask > 0.5,
-                stroke_color[c],
-                overlay[:, :, c]
-            )
-
-        # Apply colored mask (lighter fill)
-        for c in range(3):
-            overlay[:, :, c] = np.where(
-                mask > 0.5,
-                overlay[:, :, c] * (1 - alpha) + color[c] * alpha,
-                overlay[:, :, c]
-            )
-
-        # Find the center x and top y of the mask for text placement
+        # Compute mask bounding box for label position and box drawing
         mask_coords = np.argwhere(mask > 0.5)
         if len(mask_coords) > 0:
-            # Calculate x center and y top
-            y_top = int(mask_coords[:, 0].min())
-            x_center = int(mask_coords[:, 1].mean())
+            y_min = int(mask_coords[:, 0].min())
+            y_max = int(mask_coords[:, 0].max())
+            x_min = int(mask_coords[:, 1].min())
+            x_max = int(mask_coords[:, 1].max())
 
-            # Convert stroke_color to int tuple for background box
             stroke_color_int = tuple((stroke_color * 255).astype(int).tolist())
+            color_int = tuple((color * 255).astype(int).tolist())
 
-            # Get label for this mask if available
             label = None
             if labels is not None and isinstance(labels, list) and i < len(labels):
                 label = labels[i] if labels[i] else None
 
-            # Build text: prefer "Label score:0.96", fallback to "id:N score:0.96"
-            if scores is not None:
-                try:
-                    if isinstance(scores, torch.Tensor):
-                        scores_flat = scores.flatten()
-                        if i < len(scores_flat):
-                            score = scores_flat[i].item()
-                            text = f"{label} {score:.2f}" if label else f"id:{i} score:{score:.2f}"
-                        else:
-                            text = label or f"id:{i}"
-                    elif isinstance(scores, (list, np.ndarray)):
-                        score = scores[i] if isinstance(scores[i], (int, float)) else scores[i].item()
-                        text = f"{label} {score:.2f}" if label else f"id:{i} score:{score:.2f}"
-                    elif isinstance(scores, float):
-                        score = scores
-                        text = f"{label} {score:.2f}" if label else f"id:{i} score:{score:.2f}"
-                    else:
-                        text = label or f"id:{i}"
-                except Exception as e:
-                    text = label or f"id:{i}"
-                    print(f"Error getting score {i}: {e}")
-            else:
-                text = label or f"id:{i}"
+            text = _build_label_text(i, scores, labels, label)
 
-            # Store text info for drawing later
+            # Label position: top-left of bounding box for boxes mode, center-top for masks mode
+            if show_boxes and not show_masks:
+                text_pos = (x_min, max(0, y_min - font_size - 8))
+            else:
+                x_center = int(mask_coords[:, 1].mean())
+                text_pos = (x_center, max(0, y_min - font_size))
+
             text_info_list.append({
                 'text': text,
-                'position': (x_center, max(0, y_top - font_size)),
-                'bg_color': stroke_color_int
+                'position': text_pos,
+                'bg_color': stroke_color_int,
+                'box': (x_min, y_min, x_max, y_max) if show_boxes else None,
+                'box_color': color_int,
             })
 
-        # Update progress bar
-        processed_masks += 1
-        pbar.update_absolute(processed_masks, num_masks)
-    
-    # Convert overlay to PIL image once after all masks are processed
+        pbar.update_absolute(i + 1, num_masks)
+
     result = Image.fromarray((overlay * 255).astype(np.uint8))
     draw = ImageDraw.Draw(result)
-    
-    # Draw all text labels
-    for text_info in text_info_list:
-        text = text_info['text']
-        position = text_info['position']
-        bg_color = text_info['bg_color']
-        
-        # Get text bounding box
-        bbox = draw.textbbox(position, text, font=font)
-        # Draw background box with stroke_color
-        padding = 8
+
+    # Draw bounding box rectangles
+    if show_boxes:
+        for info in text_info_list:
+            if info['box'] is not None:
+                x1, y1, x2, y2 = info['box']
+                draw.rectangle([(x1, y1), (x2, y2)], outline=info['box_color'], width=stroke_width)
+
+    # Draw text labels on top
+    padding = 8
+    for info in text_info_list:
+        text = info['text']
+        pos = info['position']
+        bbox = draw.textbbox(pos, text, font=font)
         draw.rectangle(
-            [(bbox[0] - padding, bbox[1] - padding), 
+            [(bbox[0] - padding, bbox[1] - padding),
              (bbox[2] + padding, bbox[3] + padding)],
-            fill=bg_color
+            fill=info['bg_color']
         )
-        # Draw text in white
-        draw.text(position, text, fill=(255, 255, 255), font=font)
+        draw.text(pos, text, fill=(255, 255, 255), font=font)
 
     return result
 
