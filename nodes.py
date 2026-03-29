@@ -332,9 +332,15 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     "box_padding_pct",
                     default=0.0,
                     min=0.0,
-                    max=50.0,
+                    max=100.0,
                     step=0.5,
-                    tooltip="Expand each box by percentage of its own size (e.g. 1.5 = add 1.5% of box width/height on each side)"
+                    tooltip="Padding strength. Actual pixel padding depends on padding_curve mode"
+                ),
+                io.Combo.Input(
+                    "padding_curve",
+                    options=["linear", "sqrt", "cbrt"],
+                    default="cbrt",
+                    tooltip="Padding damping: linear - proportional to box size, sqrt - moderate damping, cbrt - strong damping (recommended)"
                 ),
                 io.Float.Input(
                     "deduplicate_iou",
@@ -404,7 +410,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, deduplicate_iou=0.0, min_box_size_pct=0.0, exclusion_pairs="", coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
+    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, padding_curve="cbrt", deduplicate_iou=0.0, min_box_size_pct=0.0, exclusion_pairs="", coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
         offload_device = mm.unet_offload_device()
 
         processor = sam3_model.get("processor", None)
@@ -616,12 +622,17 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     boxes_orig_list = boxes.tolist()
                     labels_boxes_orig = [{all_labels[i]: boxes_orig_list[i]} for i in range(len(all_labels))]
 
-                    # Uniform padding based on average of width and height
-                    # prevents distortion on elongated objects (e.g. tall narrow sconce)
+                    # Padding with damping curve to prevent large objects from over-expanding
                     if box_padding_pct > 0:
                         box_w = boxes[:, 2] - boxes[:, 0]
                         box_h = boxes[:, 3] - boxes[:, 1]
-                        pad = (box_w + box_h) / 2.0 * (box_padding_pct / 100.0)
+                        avg_size = (box_w + box_h) / 2.0
+                        if padding_curve == "sqrt":
+                            pad = torch.sqrt(avg_size) * (box_padding_pct / 10.0)
+                        elif padding_curve == "cbrt":
+                            pad = torch.pow(avg_size, 1.0 / 3.0) * (box_padding_pct / 10.0)
+                        else:
+                            pad = avg_size * (box_padding_pct / 100.0)
                         boxes[:, 0] = (boxes[:, 0] - pad).clamp(min=0)
                         boxes[:, 1] = (boxes[:, 1] - pad).clamp(min=0)
                         boxes[:, 2] = (boxes[:, 2] + pad).clamp(max=W)
