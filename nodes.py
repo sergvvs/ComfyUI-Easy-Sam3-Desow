@@ -604,16 +604,16 @@ class Sam3ImageSegmentation(io.ComfyNode):
                         scores = scores[:detection_limit]
                         all_labels = all_labels[:detection_limit]
 
-                    # Expand each box proportionally to its own size
+                    # Uniform padding based on average of width and height
+                    # prevents distortion on elongated objects (e.g. tall narrow sconce)
                     if box_padding_pct > 0:
                         box_w = boxes[:, 2] - boxes[:, 0]
                         box_h = boxes[:, 3] - boxes[:, 1]
-                        pad_x = box_w * (box_padding_pct / 100.0)
-                        pad_y = box_h * (box_padding_pct / 100.0)
-                        boxes[:, 0] = (boxes[:, 0] - pad_x).clamp(min=0)
-                        boxes[:, 1] = (boxes[:, 1] - pad_y).clamp(min=0)
-                        boxes[:, 2] = (boxes[:, 2] + pad_x).clamp(max=W)
-                        boxes[:, 3] = (boxes[:, 3] + pad_y).clamp(max=H)
+                        pad = (box_w + box_h) / 2.0 * (box_padding_pct / 100.0)
+                        boxes[:, 0] = (boxes[:, 0] - pad).clamp(min=0)
+                        boxes[:, 1] = (boxes[:, 1] - pad).clamp(min=0)
+                        boxes[:, 2] = (boxes[:, 2] + pad).clamp(max=W)
+                        boxes[:, 3] = (boxes[:, 3] + pad).clamp(max=H)
 
                 output_raw_masks.append(masks)
                 # Convert masks to tensor format
