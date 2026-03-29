@@ -393,7 +393,12 @@ class Sam3ImageSegmentation(io.ComfyNode):
                 io.String.Output(
                     "labels_boxes",
                     display_name="labels_boxes",
-                    tooltip="JSON array mapping each label to its bounding box coordinates"
+                    tooltip="JSON array mapping each label to its original bounding box coordinates (without padding)"
+                ),
+                io.String.Output(
+                    "labels_boxes_padding",
+                    display_name="labels_boxes_padding",
+                    tooltip="JSON array mapping each label to its padded bounding box coordinates (with box_padding_pct applied)"
                 ),
             ]
         )
@@ -464,6 +469,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
             output_raw_masks = []
             output_labels = []
             output_labels_boxes = []
+            output_labels_boxes_padding = []
 
             # Initialize progress bar
             pbar = comfy.utils.ProgressBar(num_frames)
@@ -544,6 +550,8 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     scores = None
 
                 # Handle empty results for this image
+                labels_boxes_orig = []
+                labels_boxes_pad = []
                 if masks is None or len(masks) == 0:
                     logger.warning(f"No masks detected for image {idx}, using empty mask")
                     masks = torch.zeros(1, 1, H, W, device=device)
@@ -604,6 +612,10 @@ class Sam3ImageSegmentation(io.ComfyNode):
                         scores = scores[:detection_limit]
                         all_labels = all_labels[:detection_limit]
 
+                    # Save original boxes for labels_boxes (without padding)
+                    boxes_orig_list = boxes.tolist()
+                    labels_boxes_orig = [{all_labels[i]: boxes_orig_list[i]} for i in range(len(all_labels))]
+
                     # Uniform padding based on average of width and height
                     # prevents distortion on elongated objects (e.g. tall narrow sconce)
                     if box_padding_pct > 0:
@@ -614,6 +626,10 @@ class Sam3ImageSegmentation(io.ComfyNode):
                         boxes[:, 1] = (boxes[:, 1] - pad).clamp(min=0)
                         boxes[:, 2] = (boxes[:, 2] + pad).clamp(max=W)
                         boxes[:, 3] = (boxes[:, 3] + pad).clamp(max=H)
+
+                    # Padded boxes for labels_boxes_padding
+                    boxes_pad_list = boxes.tolist()
+                    labels_boxes_pad = [{all_labels[i]: boxes_pad_list[i]} for i in range(len(all_labels))]
 
                 output_raw_masks.append(masks)
                 # Convert masks to tensor format
@@ -654,10 +670,8 @@ class Sam3ImageSegmentation(io.ComfyNode):
                 output_boxes.append(boxes)
                 output_scores.append(scores)
                 output_labels.append(all_labels)
-                # Build labels_boxes: [{label: [x1,y1,x2,y2]}, ...]
-                boxes_list = boxes.tolist()
-                labels_boxes = [{all_labels[i]: boxes_list[i]} for i in range(len(all_labels))]
-                output_labels_boxes.append(labels_boxes)
+                output_labels_boxes.append(labels_boxes_orig)
+                output_labels_boxes_padding.append(labels_boxes_pad)
 
                 # Update progress bar
                 processed_frames += 1
@@ -675,13 +689,14 @@ class Sam3ImageSegmentation(io.ComfyNode):
             # Serialize labels and labels_boxes as JSON strings
             output_labels_json = json.dumps(output_labels, ensure_ascii=False)
             output_labels_boxes_json = json.dumps(output_labels_boxes, ensure_ascii=False)
+            output_labels_boxes_padding_json = json.dumps(output_labels_boxes_padding, ensure_ascii=False)
 
             # Clean up if not keeping model loaded
             if not keep_model_loaded:
                 model.to(offload_device)
                 mm.soft_empty_cache()
 
-        return io.NodeOutput(output_masks, output_images, output_raw_masks, output_boxes_list, output_scores_list, output_labels_json, output_labels_boxes_json)
+        return io.NodeOutput(output_masks, output_images, output_raw_masks, output_boxes_list, output_scores_list, output_labels_json, output_labels_boxes_json, output_labels_boxes_padding_json)
 
 
 class Sam3VideoSegmentation(io.ComfyNode):
