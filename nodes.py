@@ -1367,11 +1367,17 @@ class Sam3Visualization(io.ComfyNode):
                     force_input=True,
                     tooltip="JSON labels from Sam3 Image Segmentation node"
                 ),
+                io.BBOX.Input(
+                    "boxes",
+                    display_name="boxes",
+                    optional=True,
+                    tooltip="Bounding boxes from Sam3 Image Segmentation (includes padding). If not connected, boxes are computed from masks"
+                ),
                 io.Combo.Input(
                     "display_mode",
-                    options=["masks", "boxes", "both"],
+                    options=["masks", "boxes", "boxes_padding", "both"],
                     default="masks",
-                    tooltip="Visualization style: masks (filled overlay), boxes (bounding rectangles), both"
+                    tooltip="masks - filled overlay, boxes - rectangles from mask, boxes_padding - rectangles with padding (requires boxes input), both - masks + boxes"
                 ),
             ],
             outputs=[
@@ -1383,7 +1389,7 @@ class Sam3Visualization(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None, labels=None, display_mode="masks") -> io.NodeOutput:
+    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None, labels=None, boxes=None, display_mode="masks") -> io.NodeOutput:
         """
         Execute visualization of masks on images.
 
@@ -1430,11 +1436,22 @@ class Sam3Visualization(io.ComfyNode):
                 elif isinstance(parsed_labels, list) and all(isinstance(l, str) for l in parsed_labels):
                     image_labels = parsed_labels
 
+            # Parse boxes if provided (list of [x1,y1,x2,y2] lists)
+            image_boxes = None
+            if boxes is not None:
+                try:
+                    if isinstance(boxes, torch.Tensor):
+                        image_boxes = boxes.tolist()
+                    elif isinstance(boxes, list):
+                        image_boxes = boxes
+                except Exception:
+                    image_boxes = None
+
             vis_image = draw_visualize_image(
                 pil_image,
                 raw_masks,
                 scores,
-                None,
+                image_boxes,
                 alpha=alpha,
                 stroke_width=stroke_width,
                 font_size=font_size,

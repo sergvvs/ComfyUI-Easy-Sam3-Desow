@@ -187,7 +187,9 @@ def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, strok
     overlay = img_np.copy()
 
     show_masks = display_mode in ("masks", "both")
-    show_boxes = display_mode in ("boxes", "both")
+    show_boxes = display_mode in ("boxes", "boxes_padding", "both")
+    # boxes_padding uses provided bboxs (with padding), other box modes compute from masks
+    use_padded_boxes = display_mode == "boxes_padding" and bboxs is not None
 
     text_info_list = []
     # Pre-generate colors for consistent coloring across modes
@@ -219,14 +221,23 @@ def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, strok
             for c in range(3):
                 overlay[:, :, c] = np.where(mask > 0.5, overlay[:, :, c] * (1 - alpha) + color[c] * alpha, overlay[:, :, c])
 
-        # Compute mask bounding box for label position and box drawing
-        mask_coords = np.argwhere(mask > 0.5)
-        if len(mask_coords) > 0:
-            y_min = int(mask_coords[:, 0].min())
-            y_max = int(mask_coords[:, 0].max())
-            x_min = int(mask_coords[:, 1].min())
-            x_max = int(mask_coords[:, 1].max())
+        # boxes_padding mode uses provided bboxs (with padding applied),
+        # all other modes compute bounding box from mask pixels
+        has_box = False
+        if use_padded_boxes and i < len(bboxs):
+            box = bboxs[i]
+            x_min, y_min, x_max, y_max = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+            has_box = True
+        else:
+            mask_coords = np.argwhere(mask > 0.5)
+            if len(mask_coords) > 0:
+                y_min = int(mask_coords[:, 0].min())
+                y_max = int(mask_coords[:, 0].max())
+                x_min = int(mask_coords[:, 1].min())
+                x_max = int(mask_coords[:, 1].max())
+                has_box = True
 
+        if has_box:
             stroke_color_int = tuple((stroke_color * 255).astype(int).tolist())
             color_int = tuple((color * 255).astype(int).tolist())
 
@@ -240,7 +251,7 @@ def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, strok
             if show_boxes and not show_masks:
                 text_pos = (x_min, max(0, y_min - font_size - 8))
             else:
-                x_center = int(mask_coords[:, 1].mean())
+                x_center = (x_min + x_max) // 2
                 text_pos = (x_center, max(0, y_min - font_size))
 
             text_info_list.append({
