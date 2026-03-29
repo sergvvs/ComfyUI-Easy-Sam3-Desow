@@ -30,7 +30,17 @@ if "sam3" not in folder_paths.folder_names_and_paths:
     os.makedirs(sam3_models_dir, exist_ok=True)
     folder_paths.folder_names_and_paths["sam3"] = ([sam3_models_dir], folder_paths.supported_pt_extensions)
 
-from .sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
+from .sam3.model_builder import (
+    build_sam3_image_model,
+    build_sam3_video_predictor,
+    build_sam3_multiplex_video_predictor,
+)
+
+
+def _is_sam31_model(model_name: str) -> bool:
+    """Detect SAM 3.1 version by checkpoint filename."""
+    name = model_name.lower()
+    return "3.1" in name or "multiplex" in name
 
 
 def _box_overlap(box_a, box_b):
@@ -209,9 +219,13 @@ class LoadSam3Model(io.ComfyNode):
         if "fp16" in model.lower():
             precision = "fp16"
 
-        # Build model based on segmentor type
+        # Detect SAM version from filename
+        is_sam31 = _is_sam31_model(model)
+
+        # Build model based on segmentor type and version
         if segmentor == "image":
             from .sam3.model.sam3_image_processor import Sam3Processor
+            # SAM 3.1 image model uses the same architecture as SAM 3
             model = build_sam3_image_model(
                 device=device,
                 eval_mode=True,
@@ -227,16 +241,24 @@ class LoadSam3Model(io.ComfyNode):
                 confidence_threshold=0.3
             )
         elif segmentor == "video":
-            model = build_sam3_video_predictor(
-                checkpoint_path=model_path,
-                gpus_to_use=None
-            )
+            if is_sam31:
+                # SAM 3.1 multiplex video predictor
+                model = build_sam3_multiplex_video_predictor(
+                    checkpoint_path=model_path,
+                )
+            else:
+                # SAM 3.0 video predictor
+                model = build_sam3_video_predictor(
+                    checkpoint_path=model_path,
+                    gpus_to_use=None
+                )
             processor = None
 
         else:
             raise ValueError(f"Unknown segmentor type: {segmentor}")
 
-        logger.info("Sam3 Model loaded successfully")
+        version = "3.1" if is_sam31 else "3.0"
+        logger.info(f"SAM {version} Model loaded successfully (segmentor={segmentor})")
 
         if precision != 'fp32' and device == 'cpu':
             raise ValueError("fp16 and bf16 are not supported on cpu")
@@ -250,6 +272,7 @@ class LoadSam3Model(io.ComfyNode):
             "segmentor": segmentor,
             "device": device,
             "dtype": dtype,
+            "version": version,
         }
 
         return io.NodeOutput(sam3_model)
@@ -883,6 +906,7 @@ class Sam3VideoSegmentation(io.ComfyNode):
         device = sam3_model.get("device", torch.device("cpu"))
         dtype = sam3_model.get("dtype", torch.float32)
         segmentor = sam3_model.get("segmentor", None)
+        version = sam3_model.get("version", "3.0")
         B, H, W, _ = video_frames.shape
 
         if video_predictor is None or segmentor != "video":
@@ -895,7 +919,7 @@ class Sam3VideoSegmentation(io.ComfyNode):
             logger.info(f"Last Frame index {frame_index} is out of bounds, setting to last frame")
             start_frame_index = B
 
-        # Set video model config
+        # Set video model config (both SAM 3 and 3.1 expose .model with these attrs)
         video_predictor.model.score_threshold_detection = score_threshold_detection
         video_predictor.model.new_det_thresh = new_det_thresh
 
@@ -941,8 +965,9 @@ class Sam3VideoSegmentation(io.ComfyNode):
         if session_id is None:
             raise ValueError("Failed to start video prediction session")
 
-        # Switch model to main device
-        video_predictor.model.to(device)
+        # Switch model to main device (SAM 3.1 multiplex is already on cuda after build)
+        if version != "3.1":
+            video_predictor.model.to(device)
 
         autocast_condition = not mm.is_device_mps(device)
         with torch.autocast(mm.get_autocast_device(device), dtype=dtype) if autocast_condition else nullcontext():
@@ -1050,9 +1075,10 @@ class Sam3VideoSegmentation(io.ComfyNode):
                 video_predictor.model.to(offload_device)
                 mm.soft_empty_cache()
 
-            # When closing the session and unloading the video memory, the predictor will shut down.
+            # When closing the session and unloading the video memory, the predictor will shut down
             if not keep_model_loaded and close_after_propagation:
-                video_predictor.shutdown()
+                if hasattr(video_predictor, 'shutdown'):
+                    video_predictor.shutdown()
 
         # Convert object_masks_dict to ordered list and pad to have same number of objects across all frames
         if len(object_masks_dict) > 0:

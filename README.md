@@ -4,11 +4,14 @@
 
 A ComfyUI custom node package for [SAM3 (Segment Anything Model 3)](https://github.com/facebookresearch/sam3), providing powerful image and video segmentation capabilities with text prompts.
 
+**Now with SAM 3.1 support** - Object Multiplex for up to 16 objects in a single forward pass, ~2x faster video processing.
+
 ## Overview
 
 This node package brings Meta's SAM3 model to ComfyUI, enabling:
 - **Image Segmentation**: Segment objects in images using text descriptions
 - **Video Tracking**: Track and segment objects across video frames
+- **SAM 3.1 Multiplex**: Track up to 16 objects simultaneously with shared memory (drop-in upgrade)
 - **Advanced Configuration**: Fine-tune video tracking parameters for optimal results
 - **Frames Editor**: Interactive visual editor for creating point and bounding box prompts on images and video frames
 
@@ -266,10 +269,13 @@ Interactive visual editor for creating point and bounding box prompts on images/
 ## Model Downloads
 
 Download SAM3 model weights from the repository:
-- [SAM3 Models](https://huggingface.co/facebook/sam3)
+- [SAM3 Models](https://huggingface.co/facebook/sam3) - base model (image + video)
 - [SAM3 FP16 Model](https://huggingface.co/yolain/sam3-safetensors/blob/main/sam3-fp16.safetensors)
+- [SAM 3.1 Multiplex](https://huggingface.co/facebook/sam3.1) - video multiplex model (~2x faster multi-object tracking)
 
 Place the downloaded models in: `ComfyUI/models/sam3/`
+
+The model version is auto-detected from the filename. Files containing "3.1" or "multiplex" will use the SAM 3.1 architecture.
 
 ## Requirements
 
@@ -301,6 +307,13 @@ This project follows the license of the original SAM3 repository.
 Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ## Changelog
+
+### v1.1.0
+
+- Added SAM 3.1 support with Object Multiplex for faster multi-object video tracking
+- Auto-detection of model version from checkpoint filename
+- New multiplex video predictor with up to 16 objects per forward pass
+- Drop-in compatible - existing workflows work without changes
 
 ### v1.0.5
 

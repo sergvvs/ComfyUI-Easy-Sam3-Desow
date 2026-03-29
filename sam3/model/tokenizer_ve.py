@@ -39,8 +39,8 @@ def bytes_to_unicode():
     """
     bs = (
         list(range(ord("!"), ord("~") + 1))
-        + list(range(ord("¡"), ord("¬") + 1))
-        + list(range(ord("®"), ord("ÿ") + 1))
+        + list(range(ord("ВЎ"), ord("В¬") + 1))
+        + list(range(ord("В®"), ord("Гї") + 1))
     )
     cs = bs[:]
     n = 0
