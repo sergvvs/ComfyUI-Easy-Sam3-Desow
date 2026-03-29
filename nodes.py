@@ -1410,7 +1410,12 @@ class Sam3Visualization(io.ComfyNode):
 
         for idx in range(B):
             pil_image = pil_images[idx]
-            raw_masks = obj_masks[idx] if obj_masks is not None else None
+            # obj_masks is [total_N, 1, H, W] flat across all images;
+            # for single image (B=1) pass all masks, otherwise index by batch
+            if B == 1:
+                raw_masks = obj_masks if obj_masks is not None else None
+            else:
+                raw_masks = obj_masks[idx] if obj_masks is not None else None
             # Get labels for this image (labels output is list of lists - one per image)
             image_labels = None
             if parsed_labels is not None:
