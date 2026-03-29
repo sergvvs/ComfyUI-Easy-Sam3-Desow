@@ -71,6 +71,10 @@
       "detection_limit": {
         "name": "检测对象限制",
         "tooltip": "限制每张图像检测的最大对象数量（默认：-1）"
+      },
+      "prompt_thresholds": {
+        "name": "提示词阈值",
+        "tooltip": "JSON：每个提示词的置信度阈值，覆盖全局阈值。示例：{\"Wardrobe\": 0.30, \"Pendant light\": 0.25}"
       }
     },
     "outputs": {

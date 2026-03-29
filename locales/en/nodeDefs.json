@@ -67,6 +67,10 @@
       "mask": {
         "name": "mask",
         "tooltip": "Input mask for refinement"
+      },
+      "prompt_thresholds": {
+        "name": "prompt_thresholds",
+        "tooltip": "JSON: per-prompt confidence thresholds that override global threshold for specific prompts. Example: {\"Wardrobe\": 0.30, \"Pendant light\": 0.25}"
       }
     },
     "outputs": {

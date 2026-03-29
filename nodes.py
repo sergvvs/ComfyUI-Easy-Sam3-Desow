@@ -364,6 +364,12 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     multiline=True,
                     tooltip='JSON: parent labels whose children should be removed when inside parent box. Example: {"Wardrobe": ["Shelving", "Upper cabinets"]}'
                 ),
+                io.String.Input(
+                    "prompt_thresholds",
+                    default="",
+                    multiline=True,
+                    tooltip='JSON: per-prompt confidence thresholds. Overrides global threshold for specific prompts. Example: {"Wardrobe": 0.30, "Pendant light": 0.25}'
+                ),
             ],
             outputs=[
                 io.Mask.Output(
@@ -410,7 +416,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, padding_curve="cbrt", deduplicate_iou=0.0, min_box_size_pct=0.0, exclusion_pairs="", coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
+    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, padding_curve="cbrt", deduplicate_iou=0.0, min_box_size_pct=0.0, exclusion_pairs="", prompt_thresholds="", coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
         offload_device = mm.unet_offload_device()
 
         processor = sam3_model.get("processor", None)
@@ -427,7 +433,18 @@ class Sam3ImageSegmentation(io.ComfyNode):
         if prompt.strip() == "" and coordinates_positive is None and coordinates_negative is None and bboxes is None and mask is None:
             raise ValueError("At least one prompt (text, points, boxes, or mask) must be provided for segmentation")
 
-        # set confidence threshold
+        # Parse per-prompt thresholds (case-insensitive lookup)
+        per_prompt_thresholds = {}
+        if prompt_thresholds and prompt_thresholds.strip():
+            try:
+                raw = json.loads(prompt_thresholds)
+                if isinstance(raw, dict):
+                    per_prompt_thresholds = {k.strip().lower(): float(v) for k, v in raw.items()}
+                    logger.info(f"Loaded {len(per_prompt_thresholds)} per-prompt threshold(s)")
+            except (json.JSONDecodeError, TypeError, ValueError) as e:
+                logger.warning(f"prompt_thresholds: invalid JSON, using global threshold. Error: {e}")
+
+        # Set default confidence threshold
         processor.set_confidence_threshold(threshold)
 
         # Parse inputs with bounds checking
@@ -502,6 +519,13 @@ class Sam3ImageSegmentation(io.ComfyNode):
                 if len(text_prompts) > 0:
                     logger.info(f"Processing {len(text_prompts)} text prompt(s)")
                     for prompt_idx, single_prompt in enumerate(text_prompts):
+                        # Apply per-prompt threshold if configured, otherwise use global
+                        prompt_key = single_prompt.strip().lower()
+                        effective_threshold = per_prompt_thresholds.get(prompt_key, threshold)
+                        processor.set_confidence_threshold(effective_threshold)
+                        if effective_threshold != threshold:
+                            logger.info(f"Prompt '{single_prompt}': using custom threshold {effective_threshold}")
+
                         # Reset state for each prompt
                         prompt_state = processor.set_image(pil_img)
                         prompt_state = processor.set_text_prompt(single_prompt, prompt_state)
@@ -515,9 +539,11 @@ class Sam3ImageSegmentation(io.ComfyNode):
                             all_masks.append(prompt_masks)
                             all_boxes.append(prompt_boxes)
                             all_scores.append(prompt_scores)
-                            # Each detection from this prompt gets the prompt text as label
                             all_labels.extend([single_prompt] * len(prompt_masks))
                             logger.info(f"Prompt '{single_prompt}': detected {len(prompt_masks)} object(s)")
+
+                    # Restore global threshold after processing all prompts
+                    processor.set_confidence_threshold(threshold)
 
                 # Process points, bbox, mask prompts (if no text prompts were provided)
                 if len(text_prompts) == 0:

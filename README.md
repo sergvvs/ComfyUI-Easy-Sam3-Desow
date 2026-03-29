@@ -65,6 +65,7 @@ Segment objects in images using text prompts and optional geometric prompts.
 - `deduplicate_iou`: Remove overlapping boxes. Keeps the more specific prompt. 0 = disabled (default: 0)
 - `min_box_size_pct`: Discard boxes smaller than this percentage of image area. 0 = disabled (default: 0)
 - `exclusion_pairs`: JSON string defining parent-child exclusion rules. When a child box is inside a parent box (IoS > 0.7), the child is removed. Example: `{"Wardrobe": ["Shelving", "Upper cabinets", "Lower cabinets"], "Bed": ["Pillow", "Blanket"]}`
+- `prompt_thresholds`: JSON string with per-prompt confidence thresholds that override the global `threshold` for specific prompts. Useful when some objects need lower confidence to be detected (e.g. built-in furniture) while others need higher threshold to avoid false positives. Example: `{"Wardrobe": 0.30, "Closet": 0.30, "Pendant light": 0.25}`
 
 **Outputs:**
 - `masks`: Combined segmentation masks (one mask per image with all detected objects merged)
@@ -300,6 +301,10 @@ This project follows the license of the original SAM3 repository.
 Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ## Changelog
+
+### v1.0.5
+
+- Added `prompt_thresholds` parameter to `Sam3 Image Segmentation` node for per-prompt confidence thresholds
 
 ### v1.0.4
 
