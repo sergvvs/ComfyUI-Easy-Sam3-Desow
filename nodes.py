@@ -198,11 +198,16 @@ class LoadSam3Model(io.ComfyNode):
                     default="fp32",
                     tooltip="Model precision for inference"
                 ),
-                # io.Boolean.Input(
-                #     "compile",
-                #     default=False,
-                #     tooltip="Compile the model for optimized performance"
-                # ),
+                io.Boolean.Input(
+                    "compile",
+                    default=False,
+                    tooltip="Enable torch.compile for ~10-20% speedup. First run is slow (~30-60s) due to graph compilation"
+                ),
+                io.Boolean.Input(
+                    "flash_attention",
+                    default=False,
+                    tooltip="Enable FlashAttention 3 (FP8). Requires H100+ GPU and flash-attn package. Speeds up attention layers"
+                ),
             ],
             outputs=[
                 io.Custom(io_type="EASY_SAM3_MODEL").Output(display_name="sam3_model",)
@@ -210,7 +215,7 @@ class LoadSam3Model(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, segmentor, device, precision) -> io.NodeOutput:
+    def execute(cls, model, segmentor, device, precision, compile=False, flash_attention=False) -> io.NodeOutput:
         # Get model path
         model_path = folder_paths.get_full_path_or_raise("sam3", model)
         if model_path is None:
@@ -222,10 +227,26 @@ class LoadSam3Model(io.ComfyNode):
         # Detect SAM version from filename
         is_sam31 = _is_sam31_model(model)
 
+        # FA3 requires H100+ (compute capability 9.0+)
+        use_fa3 = False
+        if flash_attention:
+            if not torch.cuda.is_available():
+                logger.warning("FlashAttention 3 requires CUDA GPU, ignoring flash_attention=True")
+            else:
+                cc = torch.cuda.get_device_capability()
+                if cc[0] < 9:
+                    logger.warning(f"FlashAttention 3 requires H100+ (sm90+), detected sm{cc[0]}{cc[1]}. Ignoring")
+                else:
+                    try:
+                        import flash_attn_interface  # noqa: F401
+                        use_fa3 = True
+                        logger.info("FlashAttention 3 enabled")
+                    except ImportError:
+                        logger.warning("flash-attn package not installed. Install: pip install flash-attn --no-build-isolation")
+
         # Build model based on segmentor type and version
         if segmentor == "image":
             from .sam3.model.sam3_image_processor import Sam3Processor
-            # SAM 3.1 image model uses the same architecture as SAM 3
             model = build_sam3_image_model(
                 device=device,
                 eval_mode=True,
@@ -233,7 +254,7 @@ class LoadSam3Model(io.ComfyNode):
                 load_from_HF=False,
                 enable_segmentation=True,
                 enable_inst_interactivity=False,
-                compile=False
+                compile=compile
             )
             processor = Sam3Processor(
                 model=model,
@@ -242,9 +263,12 @@ class LoadSam3Model(io.ComfyNode):
             )
         elif segmentor == "video":
             if is_sam31:
-                # SAM 3.1 multiplex video predictor
+                # SAM 3.1 multiplex video predictor with optional perf flags
                 model = build_sam3_multiplex_video_predictor(
                     checkpoint_path=model_path,
+                    use_fa3=use_fa3,
+                    use_rope_real=use_fa3,
+                    compile=compile,
                 )
             else:
                 # SAM 3.0 video predictor

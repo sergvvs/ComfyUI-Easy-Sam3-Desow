@@ -43,6 +43,8 @@ Load a SAM3 model for image or video segmentation.
 - `segmentor`: Choose between "image" or "video" mode
 - `device`: Device to load the model on (cuda, cpu, mps)
 - `precision`: Model precision (fp32, fp16, bf16)
+- `compile`: Enable `torch.compile` for ~10-20% inference speedup. First run will be slower (~30-60s) due to graph compilation, subsequent runs are faster. Works on any CUDA GPU (default: False)
+- `flash_attention`: Enable FlashAttention 3 with FP8 precision for faster attention layers. **Requires H100+ GPU (sm90+) and `flash-attn` package** (`pip install flash-attn --no-build-isolation`). Automatically ignored on unsupported hardware (default: False)
 
 **Outputs:**
 - `sam3_model`: Loaded SAM3 model for downstream nodes
@@ -284,6 +286,15 @@ The model version is auto-detected from the filename. Files containing "3.1" or 
 - ComfyUI
 - CUDA-compatible GPU (recommended)
 
+### Optional (for maximum performance)
+
+- **torch.compile** - no extra dependencies, enable `compile` toggle in Load SAM3 Model node
+- **FlashAttention 3** - requires H100/H200 GPU (Hopper architecture, sm90+) and `flash-attn` package:
+  ```bash
+  pip install flash-attn --no-build-isolation
+  ```
+  Enable `flash_attention` toggle in Load SAM3 Model node. Automatically ignored on unsupported hardware
+
 ## Localization
 
 This node package supports multiple languages:
@@ -313,6 +324,9 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 - Added SAM 3.1 support with Object Multiplex for faster multi-object video tracking
 - Auto-detection of model version from checkpoint filename
 - New multiplex video predictor with up to 16 objects per forward pass
+- Added `compile` toggle - torch.compile for ~10-20% speedup (any CUDA GPU)
+- Added `flash_attention` toggle - FlashAttention 3 / FP8 for H100+ GPUs
+- Both options are safely ignored on unsupported hardware
 - Drop-in compatible - existing workflows work without changes
 
 ### v1.0.5
