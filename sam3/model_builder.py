@@ -48,12 +48,16 @@ from .sam.transformer import RoPEAttention
 
 # Setup TensorFloat-32 for Ampere GPUs if available
 def _setup_tf32() -> None:
-    """Enable TensorFloat-32 for Ampere GPUs if available."""
+    """Enable TensorFloat-32 for Ampere+ GPUs (PyTorch 2.9+ compatible API)."""
     if torch.cuda.is_available():
         device_props = torch.cuda.get_device_properties(0)
         if device_props.major >= 8:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
+            if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
+                torch.backends.cuda.matmul.fp32_precision = "tf32"
+                torch.backends.cudnn.conv.fp32_precision = "tf32"
+            else:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
 
 
 _setup_tf32()
