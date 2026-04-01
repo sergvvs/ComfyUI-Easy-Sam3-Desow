@@ -10,9 +10,31 @@ from dataclasses import dataclass, field as field_ptr_behaviour, fields, is_data
 from typing import Any, get_args, get_origin, List, Mapping, Optional, Sequence, Union
 
 import torch
+from torch import Tensor
 
 
 MyTensor = Union[torch.Tensor, List[Any]]
+
+
+class NestedTensor:
+    """Container for a tensor and an optional padding mask (DETR-style).
+    Used by necks/backbones to carry spatial features alongside validity masks.
+    """
+
+    def __init__(self, tensors: Tensor, mask: Optional[Tensor] = None):
+        self.tensors = tensors
+        self.mask = mask
+
+    def to(self, device):
+        cast_tensor = self.tensors.to(device)
+        cast_mask = self.mask.to(device) if self.mask is not None else None
+        return NestedTensor(cast_tensor, cast_mask)
+
+    def decompose(self):
+        return self.tensors, self.mask
+
+    def __repr__(self):
+        return f"NestedTensor(shape={self.tensors.shape}, has_mask={self.mask is not None})"
 
 
 def interpolate(
