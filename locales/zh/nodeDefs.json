@@ -75,6 +75,10 @@
       "prompt_thresholds": {
         "name": "提示词阈值",
         "tooltip": "JSON：每个提示词的置信度阈值，覆盖全局阈值。示例：{\"Wardrobe\": 0.30, \"Pendant light\": 0.25}"
+      },
+      "prompt_min_sizes": {
+        "name": "提示词最小尺寸",
+        "tooltip": "JSON：每个提示词的最小框尺寸（占图像面积的百分比）。覆盖全局 min_box_size_pct。示例：{\"Wardrobe\": 10.0, \"Pendant light\": 0.5}"
       }
     },
     "outputs": {
@@ -292,6 +296,10 @@
       "font_size": {
         "name": "字体大小",
         "tooltip": "置信度分数字体大小（8-100，默认：24）"
+      },
+      "show_box_pct": {
+        "name": "显示框占比",
+        "tooltip": "显示框面积占图像面积的百分比（用于调试 min_box_size_pct 参数）"
       }
     },
     "outputs": {

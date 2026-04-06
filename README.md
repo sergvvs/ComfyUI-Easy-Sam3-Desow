@@ -71,6 +71,7 @@ Segment objects in images using text prompts and optional geometric prompts.
 - `min_box_size_pct`: Discard boxes smaller than this percentage of image area. 0 = disabled (default: 0)
 - `exclusion_pairs`: JSON string defining parent-child exclusion rules. When a child box is inside a parent box (IoS > 0.7), the child is removed. Example: `{"Wardrobe": ["Shelving", "Upper cabinets", "Lower cabinets"], "Bed": ["Pillow", "Blanket"]}`
 - `prompt_thresholds`: JSON string with per-prompt confidence thresholds that override the global `threshold` for specific prompts. Useful when some objects need lower confidence to be detected (e.g. built-in furniture) while others need higher threshold to avoid false positives. Example: `{"Wardrobe": 0.30, "Closet": 0.30, "Pendant light": 0.25}`
+- `prompt_min_sizes`: JSON string with per-prompt minimum box sizes (% of image area) that override the global `min_box_size_pct` for specific prompts. Useful when large objects like wardrobes need a higher minimum size while small objects like lamps should keep a lower threshold. Example: `{"Wardrobe": 10.0, "Armchair": 5.0, "Pendant light": 0.5}`
 
 **Outputs:**
 - `masks`: Combined segmentation masks (one mask per image with all detected objects merged)

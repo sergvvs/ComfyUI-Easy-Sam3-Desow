@@ -417,6 +417,12 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     multiline=True,
                     tooltip='JSON: per-prompt confidence thresholds. Overrides global threshold for specific prompts. Example: {"Wardrobe": 0.30, "Pendant light": 0.25}'
                 ),
+                io.String.Input(
+                    "prompt_min_sizes",
+                    default="",
+                    multiline=True,
+                    tooltip='JSON: per-prompt minimum box size (% of image area). Overrides global min_box_size_pct. Example: {"Wardrobe": 10.0, "Pendant light": 0.5}'
+                ),
             ],
             outputs=[
                 io.Mask.Output(
@@ -463,7 +469,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, padding_curve="cbrt", deduplicate_iou=0.0, min_box_size_pct=0.0, exclusion_pairs="", prompt_thresholds="", coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
+    def execute(cls, sam3_model, images, prompt, threshold=0.3, keep_model_loaded=False, add_background='none', detection_limit=-1, box_padding_pct=0.0, padding_curve="cbrt", deduplicate_iou=0.0, min_box_size_pct=0.0, exclusion_pairs="", prompt_thresholds="", prompt_min_sizes="", coordinates_positive=None, coordinates_negative=None, bboxes=None, mask=None) -> io.NodeOutput:
         offload_device = mm.unet_offload_device()
 
         processor = sam3_model.get("processor", None)
@@ -490,6 +496,17 @@ class Sam3ImageSegmentation(io.ComfyNode):
                     logger.info(f"Loaded {len(per_prompt_thresholds)} per-prompt threshold(s)")
             except (json.JSONDecodeError, TypeError, ValueError) as e:
                 logger.warning(f"prompt_thresholds: invalid JSON, using global threshold. Error: {e}")
+
+        # Parse per-prompt min box sizes (case-insensitive lookup)
+        per_prompt_min_sizes = {}
+        if prompt_min_sizes and prompt_min_sizes.strip():
+            try:
+                raw = json.loads(prompt_min_sizes)
+                if isinstance(raw, dict):
+                    per_prompt_min_sizes = {k.strip().lower(): float(v) for k, v in raw.items()}
+                    logger.info(f"Loaded {len(per_prompt_min_sizes)} per-prompt min size(s)")
+            except (json.JSONDecodeError, TypeError, ValueError) as e:
+                logger.warning(f"prompt_min_sizes: invalid JSON, using global min_box_size_pct. Error: {e}")
 
         # Set default confidence threshold
         processor.set_confidence_threshold(threshold)
@@ -651,11 +668,21 @@ class Sam3ImageSegmentation(io.ComfyNode):
                         all_labels = [all_labels[i] for i in top_indices.cpu().tolist()]
 
                     # Filter out boxes smaller than min percentage of image area
-                    if min_box_size_pct > 0 and len(boxes) > 0:
+                    # Per-prompt overrides take priority over global min_box_size_pct
+                    if (min_box_size_pct > 0 or per_prompt_min_sizes) and len(boxes) > 0:
                         image_area = H * W
-                        min_area = image_area * (min_box_size_pct / 100.0)
                         box_areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
-                        size_keep = box_areas >= min_area
+                        size_keep = torch.ones(len(boxes), dtype=torch.bool, device=boxes.device)
+                        for bi in range(len(boxes)):
+                            label_key = all_labels[bi].strip().lower() if bi < len(all_labels) else ""
+                            # Per-prompt override or global fallback
+                            effective_min = per_prompt_min_sizes.get(label_key, min_box_size_pct)
+                            if effective_min > 0:
+                                min_area = image_area * (effective_min / 100.0)
+                                if box_areas[bi] < min_area:
+                                    size_keep[bi] = False
+                                    if effective_min != min_box_size_pct:
+                                        logger.info(f"Image {idx}: '{all_labels[bi]}' removed by custom min size {effective_min}%")
                         if size_keep.any():
                             removed_count = (~size_keep).sum().item()
                             masks = masks[size_keep]
@@ -663,7 +690,7 @@ class Sam3ImageSegmentation(io.ComfyNode):
                             scores = scores[size_keep]
                             all_labels = [l for l, k in zip(all_labels, size_keep.tolist()) if k]
                             if removed_count > 0:
-                                logger.info(f"Image {idx}: removed {removed_count} small box(es) below {min_box_size_pct}% of image area")
+                                logger.info(f"Image {idx}: removed {removed_count} small box(es) by min size filter")
 
                     # Deduplicate overlapping boxes - keep more specific prompt
                     if deduplicate_iou > 0 and len(boxes) > 1:
@@ -1481,6 +1508,11 @@ class Sam3Visualization(io.ComfyNode):
                     default="masks",
                     tooltip="masks - filled overlay, boxes - rectangles from mask, boxes_padding - rectangles with padding (requires boxes input), both - masks + boxes"
                 ),
+                io.Boolean.Input(
+                    "show_box_pct",
+                    default=False,
+                    tooltip="Show box area as percentage of image area (useful for tuning min_box_size_pct)"
+                ),
             ],
             outputs=[
                 io.Image.Output(
@@ -1491,7 +1523,7 @@ class Sam3Visualization(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None, labels=None, boxes=None, display_mode="masks") -> io.NodeOutput:
+    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None, labels=None, boxes=None, display_mode="masks", show_box_pct=False) -> io.NodeOutput:
         """
         Execute visualization of masks on images.
 
@@ -1571,7 +1603,8 @@ class Sam3Visualization(io.ComfyNode):
                 stroke_width=stroke_width,
                 font_size=font_size,
                 labels=image_labels,
-                display_mode=display_mode
+                display_mode=display_mode,
+                show_box_pct=show_box_pct
             )
 
             # Convert back to tensor

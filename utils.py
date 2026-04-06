@@ -162,7 +162,7 @@ def _build_label_text(i, scores, labels, label):
     return label or f"id:{i}"
 
 
-def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, stroke_width=5, font_size=24, labels=None, display_mode="masks"):
+def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, stroke_width=5, font_size=24, labels=None, display_mode="masks", show_box_pct=False):
 
     if isinstance(image, torch.Tensor):
         image = tensor_to_pil(image)[0]
@@ -246,6 +246,13 @@ def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, strok
                 label = labels[i] if labels[i] else None
 
             text = _build_label_text(i, scores, labels, label)
+
+            # Append box area percentage relative to image area
+            if show_box_pct:
+                box_area = (x_max - x_min) * (y_max - y_min)
+                image_area = img_np.shape[0] * img_np.shape[1]
+                box_pct = (box_area / image_area) * 100.0
+                text = f"{text} ({box_pct:.1f}%)"
 
             # Label position: top-left of bounding box for boxes mode, center-top for masks mode
             if show_boxes and not show_masks:

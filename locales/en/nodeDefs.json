@@ -71,6 +71,10 @@
       "prompt_thresholds": {
         "name": "prompt_thresholds",
         "tooltip": "JSON: per-prompt confidence thresholds that override global threshold for specific prompts. Example: {\"Wardrobe\": 0.30, \"Pendant light\": 0.25}"
+      },
+      "prompt_min_sizes": {
+        "name": "prompt_min_sizes",
+        "tooltip": "JSON: per-prompt minimum box size (% of image area). Overrides global min_box_size_pct for specific prompts. Example: {\"Wardrobe\": 10.0, \"Pendant light\": 0.5}"
       }
     },
     "outputs": {
@@ -284,6 +288,10 @@
       "stroke_width": {
         "name": "stroke_width",
         "tooltip": "Width of the mask border stroke in pixels (1-100, default: 5)"
+      },
+      "show_box_pct": {
+        "name": "show_box_pct",
+        "tooltip": "Show box area as percentage of image area (useful for tuning min_box_size_pct)"
       }
     },
     "outputs": {
