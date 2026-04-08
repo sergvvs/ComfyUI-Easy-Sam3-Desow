@@ -297,6 +297,10 @@
         "name": "字体大小",
         "tooltip": "置信度分数字体大小（8-100，默认：24）"
       },
+      "show_labels": {
+        "name": "显示标签",
+        "tooltip": "在遮罩和边框上方显示标签和分数文本"
+      },
       "show_box_pct": {
         "name": "显示框占比",
         "tooltip": "显示框面积占图像面积的百分比（用于调试 min_box_size_pct 参数）"

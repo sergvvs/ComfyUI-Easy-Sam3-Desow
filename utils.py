@@ -162,7 +162,7 @@ def _build_label_text(i, scores, labels, label):
     return label or f"id:{i}"
 
 
-def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, stroke_width=5, font_size=24, labels=None, display_mode="masks", show_box_pct=False):
+def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, stroke_width=5, font_size=24, labels=None, display_mode="masks", show_box_pct=False, show_labels=True):
 
     if isinstance(image, torch.Tensor):
         image = tensor_to_pil(image)[0]
@@ -240,34 +240,40 @@ def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, strok
         if has_box:
             stroke_color_int = tuple((stroke_color * 255).astype(int).tolist())
             color_int = tuple((color * 255).astype(int).tolist())
-
-            label = None
-            if labels is not None and isinstance(labels, list) and i < len(labels):
-                label = labels[i] if labels[i] else None
-
-            text = _build_label_text(i, scores, labels, label)
-
-            # Append box area percentage relative to image area
-            if show_box_pct:
-                box_area = (x_max - x_min) * (y_max - y_min)
-                image_area = img_np.shape[0] * img_np.shape[1]
-                box_pct = (box_area / image_area) * 100.0
-                text = f"{text} ({box_pct:.1f}%)"
-
-            # Label position: top-left of bounding box for boxes mode, center-top for masks mode
-            if show_boxes and not show_masks:
-                text_pos = (x_min, max(0, y_min - font_size - 8))
-            else:
-                x_center = (x_min + x_max) // 2
-                text_pos = (x_center, max(0, y_min - font_size))
-
-            text_info_list.append({
-                'text': text,
-                'position': text_pos,
+            text_info = {
+                'text': None,
+                'position': None,
                 'bg_color': stroke_color_int,
                 'box': (x_min, y_min, x_max, y_max) if show_boxes else None,
                 'box_color': color_int,
-            })
+            }
+
+            # Keep box drawing independent from text so labels can be disabled without affecting visualization.
+            if show_labels:
+                label = None
+                if labels is not None and isinstance(labels, list) and i < len(labels):
+                    label = labels[i] if labels[i] else None
+
+                text = _build_label_text(i, scores, labels, label)
+
+                # Append box area percentage relative to image area
+                if show_box_pct:
+                    box_area = (x_max - x_min) * (y_max - y_min)
+                    image_area = img_np.shape[0] * img_np.shape[1]
+                    box_pct = (box_area / image_area) * 100.0
+                    text = f"{text} ({box_pct:.1f}%)"
+
+                # Label position: top-left of bounding box for boxes mode, center-top for masks mode
+                if show_boxes and not show_masks:
+                    text_pos = (x_min, max(0, y_min - font_size - 8))
+                else:
+                    x_center = (x_min + x_max) // 2
+                    text_pos = (x_center, max(0, y_min - font_size))
+
+                text_info['text'] = text
+                text_info['position'] = text_pos
+
+            text_info_list.append(text_info)
 
         pbar.update_absolute(i + 1, num_masks)
 
@@ -284,6 +290,8 @@ def draw_visualize_image(image, masks, scores=None, bboxs=None, alpha=0.5, strok
     # Draw text labels on top
     padding = 8
     for info in text_info_list:
+        if not show_labels or not info['text'] or info['position'] is None:
+            continue
         text = info['text']
         pos = info['position']
         bbox = draw.textbbox(pos, text, font=font)

@@ -1513,6 +1513,11 @@ class Sam3Visualization(io.ComfyNode):
                     default=False,
                     tooltip="Show box area as percentage of image area (useful for tuning min_box_size_pct)"
                 ),
+                io.Boolean.Input(
+                    "show_labels",
+                    default=True,
+                    tooltip="Show labels and score text overlay on top of masks and boxes"
+                ),
             ],
             outputs=[
                 io.Image.Output(
@@ -1523,7 +1528,7 @@ class Sam3Visualization(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None, labels=None, boxes=None, display_mode="masks", show_box_pct=False) -> io.NodeOutput:
+    def execute(cls, image, obj_masks, alpha=0.5, stroke_width=5, font_size=24, scores=None, labels=None, boxes=None, display_mode="masks", show_box_pct=False, show_labels=True) -> io.NodeOutput:
         """
         Execute visualization of masks on images.
 
@@ -1604,7 +1609,8 @@ class Sam3Visualization(io.ComfyNode):
                 font_size=font_size,
                 labels=image_labels,
                 display_mode=display_mode,
-                show_box_pct=show_box_pct
+                show_box_pct=show_box_pct,
+                show_labels=show_labels
             )
 
             # Convert back to tensor

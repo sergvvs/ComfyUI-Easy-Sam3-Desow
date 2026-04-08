@@ -289,6 +289,14 @@
         "name": "stroke_width",
         "tooltip": "Width of the mask border stroke in pixels (1-100, default: 5)"
       },
+      "font_size": {
+        "name": "font_size",
+        "tooltip": "Font size for confidence score text (8-100, default: 24)"
+      },
+      "show_labels": {
+        "name": "show_labels",
+        "tooltip": "Show labels and score text overlay on top of masks and boxes"
+      },
       "show_box_pct": {
         "name": "show_box_pct",
         "tooltip": "Show box area as percentage of image area (useful for tuning min_box_size_pct)"

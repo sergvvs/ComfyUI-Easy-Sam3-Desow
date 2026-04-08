@@ -200,6 +200,8 @@ Visualize segmentation masks with bounding boxes and confidence scores overlaid 
 - `scores` (optional): Confidence scores from Sam3 Image Segmentation node (min: 0, max: 1, step: 0.0001)
 - `alpha`: Transparency of mask overlay (0.0-1.0, step: 0.05, default: 0.5). 0=fully transparent, 1=fully opaque
 - `stroke_width`: Width of the mask border stroke in pixels (min: 1, max: 100, step: 1, default: 5)
+- `font_size`: Font size for score text (min: 8, max: 100, step: 1, default: 24)
+- `show_labels`: Show or hide label and score text overlay (default: True)
 
 **Outputs:**
 - `visualization`: Visualized images with colored masks, borders, and confidence scores overlaid
