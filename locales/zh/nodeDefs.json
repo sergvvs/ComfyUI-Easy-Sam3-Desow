@@ -347,6 +347,25 @@
       }
     }
   },
+  "easy sam3ExtractMask": {
+    "display_name": "SAM3 提取遮罩",
+    "inputs": {
+      "obj_masks": {
+        "name": "对象遮罩",
+        "tooltip": "来自 SAM3 图像分割节点的单独对象遮罩 [N, 1, H, W]"
+      },
+      "index": {
+        "name": "索引",
+        "tooltip": "对象索引（从 0 开始），对应 labels_boxes 数组中的位置"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "遮罩",
+        "tooltip": "指定对象的提取遮罩 [1, H, W]"
+      }
+    }
+  },
   "easy stringToBBox": {
     "display_name": "字符串转边界框",
     "inputs": {

@@ -1801,6 +1801,63 @@ class Sam3GetObjectMask(io.ComfyNode):
             raise ValueError(f"Error extracting object mask for index {obj_id}: {str(e)}")
 
 
+class Sam3ExtractMask(io.ComfyNode):
+    """Extract a single object mask by index from Sam3 Image Segmentation obj_masks output."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="easy sam3ExtractMask",
+            display_name="SAM3 Extract Mask",
+            category="EasyUse/Sam3",
+            description="Extract a single mask by index from obj_masks output of Sam3 Image Segmentation",
+            inputs=[
+                io.Mask.Input(
+                    "obj_masks",
+                    display_name="obj_masks",
+                    tooltip="Individual object masks from Sam3 Image Segmentation node [N, 1, H, W]"
+                ),
+                io.Int.Input(
+                    "index",
+                    default=0,
+                    min=0,
+                    max=1000,
+                    tooltip="Object index (0-based) matching the position in labels_boxes array"
+                ),
+            ],
+            outputs=[
+                io.Mask.Output(
+                    "mask",
+                    display_name="mask",
+                    tooltip="Extracted mask for the specified object [1, H, W]"
+                )
+            ]
+        )
+
+    @classmethod
+    def execute(cls, obj_masks, index) -> io.NodeOutput:
+        # obj_masks from image segmentation: [N, 1, H, W] where N = number of objects
+        if obj_masks is None or len(obj_masks) == 0:
+            raise ValueError("obj_masks input is empty")
+
+        num_objects = obj_masks.shape[0]
+
+        if index < 0 or index >= num_objects:
+            raise ValueError(
+                f"Index {index} out of range. Available indices: 0-{num_objects - 1} ({num_objects} objects total)"
+            )
+
+        # Extract single mask: [1, H, W] -> squeeze channel dim -> [H, W] -> add batch dim -> [1, H, W]
+        mask = obj_masks[index]
+        if mask.dim() == 3:
+            mask = mask.squeeze(0)
+        mask = mask.unsqueeze(0).float()
+
+        logger.info(f"Extracted mask at index {index} from {num_objects} objects, shape: {mask.shape}")
+
+        return io.NodeOutput(mask)
+
+
 class StringToBBox(io.ComfyNode):
     """Convert string coordinates to BBOX type."""
 

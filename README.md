@@ -150,7 +150,23 @@ This node is useful when you have multiple tracked objects in a video and want t
 - Process different objects separately in your workflow
 - Apply different effects or transformations to specific tracked objects
 
-### 7. SAM3 Video Model Extra Config
+### 7. SAM3 Extract Mask
+Extract a single object mask by index from SAM3 Image Segmentation `obj_masks` output.
+
+**Inputs:**
+- `obj_masks`: Individual object masks from Sam3 Image Segmentation node (tensor [N, 1, H, W])
+- `index`: Object index (0-based, min: 0, max: 1000, default: 0). Matches the position in `labels_boxes` array
+
+**Outputs:**
+- `mask`: Extracted mask for the specified object [1, H, W] format
+
+**Use Case:**
+When you have detected multiple objects in the first pass and need to extract a specific object's mask by its index. Useful for two-pass pipelines:
+1. First pass detects all objects, returns `labels_boxes` to the frontend
+2. User selects an object on the frontend, determining its index
+3. Second pass runs the same detection, then this node extracts the exact mask by index from `obj_masks`
+
+### 8. SAM3 Video Model Extra Config
 Configure advanced parameters for video segmentation to fine-tune tracking behavior.
 
 **Parameters:**
@@ -175,7 +191,7 @@ Configure advanced parameters for video segmentation to fine-tune tracking behav
 **Output:**
 - `extra_config`: Configuration dictionary for Video Segmentation node
 
-### 8. Sam3 Visualization
+### 9. Sam3 Visualization
 Visualize segmentation masks with bounding boxes and confidence scores overlaid on images.
 
 **Inputs:**
@@ -188,7 +204,7 @@ Visualize segmentation masks with bounding boxes and confidence scores overlaid 
 **Outputs:**
 - `visualization`: Visualized images with colored masks, borders, and confidence scores overlaid
 
-### 9. Frames Editor
+### 10. Frames Editor
 Interactive visual editor for creating point and bounding box prompts on images/video frames.
 
 **Inputs:**

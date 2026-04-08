@@ -339,6 +339,25 @@
       }
     }
   },
+  "easy sam3ExtractMask": {
+    "display_name": "SAM3 Extract Mask",
+    "inputs": {
+      "obj_masks": {
+        "name": "obj_masks",
+        "tooltip": "Individual object masks from Sam3 Image Segmentation node [N, 1, H, W]"
+      },
+      "index": {
+        "name": "index",
+        "tooltip": "Object index (0-based) matching the position in labels_boxes array"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "mask",
+        "tooltip": "Extracted mask for the specified object [1, H, W]"
+      }
+    }
+  },
   "easy stringToBBox": {
     "display_name": "String to BBox",
     "inputs": {
