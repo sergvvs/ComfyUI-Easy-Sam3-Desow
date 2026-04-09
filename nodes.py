@@ -1975,6 +1975,38 @@ class Sam3EncodeResultsToText(io.ComfyNode):
 
         n_masks = masks_np.shape[0]
 
+        # Sam3 Image Segmentation outputs are batched per image:
+        #   boxes  = [[[x1,y1,x2,y2], ...], ...]   list per image of list per object
+        #   scores = [[s1, s2, ...], ...]
+        #   labels = JSON string of [["Sofa","Chair"], ...]
+        # obj_masks is already flat [N_total, 1, H, W] (torch.cat across images),
+        # so we flatten boxes/scores/labels by one level to align with masks.
+
+        def _flatten_one_level(seq):
+            """If seq looks like a per-image batch (list of lists), flatten one level."""
+            if seq is None:
+                return []
+            if isinstance(seq, torch.Tensor):
+                seq = seq.detach().cpu().tolist()
+            elif isinstance(seq, np.ndarray):
+                seq = seq.tolist()
+            if not isinstance(seq, (list, tuple)) or len(seq) == 0:
+                return list(seq) if seq is not None else []
+            first = seq[0]
+            # If first element is itself a sequence of sequences/numbers, treat outer as batch
+            if isinstance(first, (list, tuple)):
+                # Heuristic: scores look like [[float, float, ...], ...]
+                # boxes look like [[[x,y,x,y], ...], ...]
+                # In both cases the inner element is a per-image list → flatten
+                flat = []
+                for inner in seq:
+                    if isinstance(inner, (list, tuple)):
+                        flat.extend(inner)
+                    else:
+                        flat.append(inner)
+                return flat
+            return list(seq)
+
         # Parse labels: usually arrives as a JSON string from Sam3 Image Segmentation
         labels_list: List[str] = []
         if labels is None or labels == "":
@@ -1982,14 +2014,23 @@ class Sam3EncodeResultsToText(io.ComfyNode):
         elif isinstance(labels, str):
             try:
                 parsed = json.loads(labels)
-                if isinstance(parsed, list):
+                # parsed is typically [["Sofa","Chair"], ...]; flatten if so
+                if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], (list, tuple)):
+                    flat_labels = []
+                    for inner in parsed:
+                        if isinstance(inner, (list, tuple)):
+                            flat_labels.extend(inner)
+                        else:
+                            flat_labels.append(inner)
+                    labels_list = [str(x) for x in flat_labels]
+                elif isinstance(parsed, list):
                     labels_list = [str(x) for x in parsed]
                 else:
                     labels_list = [str(parsed)] * n_masks
             except json.JSONDecodeError:
                 labels_list = [labels] * n_masks
         elif isinstance(labels, (list, tuple)):
-            labels_list = [str(x) for x in labels]
+            labels_list = [str(x) for x in _flatten_one_level(labels)]
         else:
             labels_list = [str(labels)] * n_masks
 
@@ -1999,27 +2040,25 @@ class Sam3EncodeResultsToText(io.ComfyNode):
         elif len(labels_list) > n_masks:
             labels_list = labels_list[:n_masks]
 
-        # Normalize boxes to a plain Python list of [x1, y1, x2, y2]
+        # Normalize boxes: flatten image-batch wrapper, then ensure each element is [x1,y1,x2,y2]
+        boxes_flat = _flatten_one_level(boxes)
         boxes_list: List[List[float]] = []
-        if boxes is not None:
-            if isinstance(boxes, torch.Tensor):
-                boxes_list = boxes.detach().cpu().tolist()
-            elif isinstance(boxes, np.ndarray):
-                boxes_list = boxes.tolist()
-            elif isinstance(boxes, (list, tuple)):
-                boxes_list = [list(b) for b in boxes]
+        for b in boxes_flat:
+            if isinstance(b, (list, tuple)) and len(b) >= 4:
+                boxes_list.append([float(b[0]), float(b[1]), float(b[2]), float(b[3])])
+            else:
+                boxes_list.append([0.0, 0.0, 0.0, 0.0])
         if len(boxes_list) < n_masks:
             boxes_list = boxes_list + [[0.0, 0.0, 0.0, 0.0]] * (n_masks - len(boxes_list))
 
-        # Normalize scores to a list of floats
+        # Normalize scores: flatten image-batch wrapper into a list of floats
+        scores_flat = _flatten_one_level(scores)
         scores_list: List[float] = []
-        if scores is not None:
-            if isinstance(scores, torch.Tensor):
-                scores_list = [float(x) for x in scores.detach().cpu().tolist()]
-            elif isinstance(scores, np.ndarray):
-                scores_list = [float(x) for x in scores.tolist()]
-            elif isinstance(scores, (list, tuple)):
-                scores_list = [float(x) for x in scores]
+        for s in scores_flat:
+            try:
+                scores_list.append(float(s))
+            except (TypeError, ValueError):
+                scores_list.append(0.0)
         if len(scores_list) < n_masks:
             scores_list = scores_list + [0.0] * (n_masks - len(scores_list))
 
