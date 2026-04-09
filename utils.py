@@ -2,12 +2,14 @@
 Utility functions for tensor and PIL image conversions.
 """
 
+import base64
+import zlib
 import numpy as np
 import torch
 import json
 import comfy.utils
 from PIL import Image
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Tuple
 
 
 def tensor_to_pil(images: torch.Tensor) -> List[Image.Image]:
@@ -561,6 +563,89 @@ def parse_bbox(bbox, image_shape=None):
         error_msg += f"Input type: {type(bbox)}\n"
         error_msg += f"Input content: {repr(bbox)[:500]}"
         raise ValueError(error_msg)
+
+
+# ---------------------------------------------------------------------------
+# Mask serialization helpers (for cross-VM persistence via plain text/JSON)
+# ---------------------------------------------------------------------------
+
+def encode_mask_b64(mask: Union[np.ndarray, torch.Tensor]) -> str:
+    """Pack a binary mask into a compact ASCII string.
+
+    Pipeline: bool/0-1 → packbits (×8 compression) → zlib → base64.
+    Resulting string can be safely stored in any TEXT field of any DB.
+
+    Args:
+        mask: 2D binary mask, shape (H, W). Tensor or ndarray; bool/uint8/float ok.
+
+    Returns:
+        ASCII string with the encoded mask payload.
+    """
+    if isinstance(mask, torch.Tensor):
+        mask = mask.detach().cpu().numpy()
+    if mask.ndim != 2:
+        # squeeze trailing single dims; common shapes: (1,H,W) or (H,W,1)
+        mask = np.squeeze(mask)
+    if mask.ndim != 2:
+        raise ValueError(f"encode_mask_b64 expects 2D mask, got shape {mask.shape}")
+
+    # Binarize and pack 8 pixels per byte
+    binary = (mask > 0).astype(np.uint8).flatten()
+    packed = np.packbits(binary)
+    compressed = zlib.compress(packed.tobytes(), level=6)
+    return base64.b64encode(compressed).decode("ascii")
+
+
+def decode_mask_b64(b64_str: str, height: int, width: int) -> np.ndarray:
+    """Inverse of encode_mask_b64. Returns uint8 mask of shape (H, W) with 0/1.
+
+    Args:
+        b64_str: ASCII payload produced by encode_mask_b64
+        height: original mask height
+        width: original mask width
+
+    Returns:
+        ndarray uint8 of shape (height, width) with values in {0, 1}
+    """
+    if not isinstance(b64_str, str) or not b64_str:
+        raise ValueError("decode_mask_b64: empty/invalid b64 string")
+
+    compressed = base64.b64decode(b64_str)
+    packed = np.frombuffer(zlib.decompress(compressed), dtype=np.uint8)
+    flat = np.unpackbits(packed)[: height * width]
+    return flat.reshape(height, width).astype(np.uint8)
+
+
+def make_obj_id(box: Union[List[float], Tuple[float, ...], np.ndarray, torch.Tensor],
+                grid: int = 8) -> str:
+    """Build a content-based stable id for a detection from its bbox.
+
+    Format: '{cx}_{cy}_{w}_{h}' where coordinates are quantized to a `grid`-pixel
+    lattice. Two slightly different boxes (numerical jitter ±a few px) get the
+    same id, while genuinely different objects get different ids.
+
+    Args:
+        box: bounding box in xyxy pixel coordinates
+        grid: quantization step in pixels (default 8). Larger = more tolerant
+              to noise but may collapse two close small objects.
+
+    Returns:
+        String id like '1448_1056_280_296'
+    """
+    if isinstance(box, torch.Tensor):
+        box = box.detach().cpu().tolist()
+    elif isinstance(box, np.ndarray):
+        box = box.tolist()
+
+    if len(box) != 4:
+        raise ValueError(f"make_obj_id expects 4 values, got {len(box)}")
+
+    x1, y1, x2, y2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+    cx = round((x1 + x2) / 2 / grid) * grid
+    cy = round((y1 + y2) / 2 / grid) * grid
+    w  = round((x2 - x1) / grid) * grid
+    h  = round((y2 - y1) / grid) * grid
+    return f"{cx}_{cy}_{w}_{h}"
 
 
 if __name__ == "__main__":

@@ -166,6 +166,72 @@ When you have detected multiple objects in the first pass and need to extract a 
 2. User selects an object on the frontend, determining its index
 3. Second pass runs the same detection, then this node extracts the exact mask by index from `obj_masks`
 
+### 7a. SAM3 Encode Results To Text
+Serialize all SAM3 image segmentation results into a single JSON text block - designed for cross-VM persistence (DB storage, two-step pipelines).
+
+**Why:** When the second pipeline run happens on a *different* VM, re-running SAM3 inference produces non-identical results (different cuDNN/CUDA/driver/TF32 → different scores → different detections). Saving the masks once and decoding them later is the only fully deterministic solution.
+
+**Inputs:**
+- `image`: Source image used for segmentation (needed to capture canonical `image_w`/`image_h`)
+- `obj_masks`: Individual object masks from `Sam3 Image Segmentation` [N, 1, H, W]
+- `boxes`: Bounding boxes from `Sam3 Image Segmentation`
+- `labels`: JSON array of label strings from `Sam3 Image Segmentation`
+- `scores` (optional): Confidence scores
+- `id_grid`: Pixel grid for content-based `obj_id` quantization (default 8). Larger = more tolerant to numerical jitter
+
+**Outputs:**
+- `results_text`: Single JSON text block containing every object with its packed mask. Format:
+  ```json
+  {
+    "version": 1,
+    "image_w": 2048,
+    "image_h": 1500,
+    "image_hash": "sha256...",
+    "id_grid": 8,
+    "objects": [
+      {
+        "id": "1448_1056_280_296",
+        "label": "Armchair",
+        "box": [1305.56, 905.91, 1588.23, 1200.95],
+        "score": 0.78,
+        "mask_b64": "eJzNW82OHbcN..."
+      }
+    ]
+  }
+  ```
+  Mask payload is `packbits → zlib → base64`. Typical size: ~5-30 KB per object. Safe for any DB TEXT field.
+- `obj_ids`: JSON array of content-based ids in the same order as `obj_masks`. Use this on the frontend instead of array indices - the id is stable across runs even if the order or label changes.
+
+**Use case:**
+1. VM1 runs `Sam3 Image Segmentation` once
+2. Pipe outputs into `Sam3 Encode Results To Text`
+3. Save `results_text` into your DB as a TEXT field
+4. Frontend reads back the JSON, shows `label + box` to the user
+5. User picks an object - frontend stores its `id` (not its index)
+6. VM2 receives the same `results_text` (or just the chosen object) and uses `Sam3 Decode Mask From Text` to get the mask **without loading SAM3 at all**
+
+### 7b. SAM3 Decode Mask From Text
+Decode a single mask from a JSON text block produced by `Sam3 Encode Results To Text`. **No SAM3 model needed** - this node is pure JSON parsing + base64/zlib decode, fully deterministic across VMs.
+
+**Inputs:**
+- `results_text`: JSON text from `Sam3 Encode Results To Text` (or a single-object JSON if your backend already extracted it)
+- `select_by`: How to find the object: `id` (recommended), `label`, or `index`
+- `selector`: The lookup value:
+  - For `id`: full content id, e.g. `"1448_1056_280_296"`
+  - For `label`: label string, e.g. `"Armchair"` (case-insensitive). If multiple objects have the same label, picks the highest-score one
+  - For `index`: integer as string, e.g. `"3"`
+
+**Outputs:**
+- `mask`: Decoded binary mask [1, H, W]
+- `label`: Label of the selected object
+- `box`: Bounding box [x1, y1, x2, y2]
+- `score`: Confidence score
+- `obj_id`: Content-based id of the selected object
+
+**Notes:**
+- Accepts both the full `objects[]` payload and a single-object JSON. If your backend wants to send only the chosen object to ComfyUI B (smaller payload), pass an object that contains at least `mask_b64`, `image_w`, `image_h`.
+- Errors are explicit: missing id, missing image dimensions, malformed JSON - all raise with a clear message.
+
 ### 8. SAM3 Video Model Extra Config
 Configure advanced parameters for video segmentation to fine-tune tracking behavior.
 
@@ -337,6 +403,12 @@ This project follows the license of the original SAM3 repository.
 Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ## Changelog
+
+### Unreleased
+
+- Added `SAM3 Encode Results To Text` node for serializing all SAM3 image segmentation results into a single JSON text block (DB-friendly, base64-packed masks). Enables cross-VM persistence so the second pipeline run does not need to re-invoke SAM3 (which is non-deterministic across machines).
+- Added `SAM3 Decode Mask From Text` node for restoring a single mask from the saved JSON text block, without loading the SAM3 model. Selection by content-based `id`, `label`, or `index`.
+- Added content-based stable object ids (`cx_cy_w_h` quantized to a pixel grid) so frontends can reference detections without relying on fragile array indices.
 
 ### v1.1.0
 

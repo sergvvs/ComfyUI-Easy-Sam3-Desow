@@ -20,7 +20,18 @@ from comfy_api.latest._io import FolderType
 
 from comfy_execution.graph import ExecutionBlocker
 from .sam3.logger import get_logger
-from .utils import tensor_to_pil, pil_to_tensor, masks_to_tensor, join_image_with_alpha, parse_points, parse_bbox, draw_visualize_image
+from .utils import (
+    tensor_to_pil,
+    pil_to_tensor,
+    masks_to_tensor,
+    join_image_with_alpha,
+    parse_points,
+    parse_bbox,
+    draw_visualize_image,
+    encode_mask_b64,
+    decode_mask_b64,
+    make_obj_id,
+)
 
 logger = get_logger(__name__)
 
@@ -1862,6 +1873,354 @@ class Sam3ExtractMask(io.ComfyNode):
         logger.info(f"Extracted mask at index {index} from {num_objects} objects, shape: {mask.shape}")
 
         return io.NodeOutput(mask)
+
+
+class Sam3EncodeResultsToText(io.ComfyNode):
+    """Encode SAM3 segmentation results into a single JSON text block.
+
+    Designed for cross-VM persistence: produced text fully describes all detected
+    objects (labels, boxes, scores, content-based ids and packed masks) so the
+    second pipeline run does not need to invoke SAM3 again. The text is plain
+    ASCII JSON and can be stored in any DB TEXT field.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="easy sam3EncodeResultsToText",
+            display_name="SAM3 Encode Results To Text",
+            category="EasyUse/Sam3",
+            description="Serialize obj_masks + boxes + labels into a single JSON text block (DB-friendly)",
+            inputs=[
+                io.Image.Input(
+                    "image",
+                    tooltip="Source image used for segmentation (needed for image_w/image_h)"
+                ),
+                io.Mask.Input(
+                    "obj_masks",
+                    display_name="obj_masks",
+                    tooltip="Individual object masks from SAM3 Image Segmentation [N, 1, H, W] or [N, H, W]"
+                ),
+                io.BBOX.Input(
+                    "boxes",
+                    display_name="boxes",
+                    tooltip="Bounding boxes for each detected object"
+                ),
+                io.String.Input(
+                    "labels",
+                    display_name="labels",
+                    tooltip="JSON array of label strings (one per object)",
+                    force_input=True,
+                ),
+                io.Float.Input(
+                    "scores",
+                    display_name="scores",
+                    optional=True,
+                    tooltip="Optional confidence scores for each object",
+                    force_input=True,
+                ),
+                io.Int.Input(
+                    "id_grid",
+                    default=8,
+                    min=1,
+                    max=64,
+                    tooltip="Grid quantization (px) for content-based obj_id. Larger = more tolerant to jitter"
+                ),
+            ],
+            outputs=[
+                io.String.Output(
+                    "results_text",
+                    display_name="results_text",
+                    tooltip="JSON text with all objects (image_w, image_h, objects[]). Save this to your DB."
+                ),
+                io.String.Output(
+                    "obj_ids",
+                    display_name="obj_ids",
+                    tooltip="JSON array of content-based ids in the same order as obj_masks"
+                ),
+            ]
+        )
+
+    @classmethod
+    def execute(cls, image, obj_masks, boxes, labels, scores=None, id_grid=8) -> io.NodeOutput:
+        # Source image dimensions are the canonical reference for downstream decoding
+        if image is None or not isinstance(image, torch.Tensor):
+            raise ValueError("image input is required and must be a tensor")
+
+        if image.dim() == 4:
+            _, img_h, img_w, _ = image.shape
+        elif image.dim() == 3:
+            img_h, img_w, _ = image.shape
+        else:
+            raise ValueError(f"Unexpected image shape: {tuple(image.shape)}")
+
+        # Normalize obj_masks to [N, H, W] regardless of incoming layout
+        if obj_masks is None:
+            masks_np = np.zeros((0, img_h, img_w), dtype=np.uint8)
+        else:
+            m = obj_masks
+            if isinstance(m, torch.Tensor):
+                m = m.detach().cpu()
+            else:
+                m = torch.as_tensor(m)
+            # squeeze channel dim if present: [N,1,H,W] → [N,H,W]
+            if m.dim() == 4 and m.shape[1] == 1:
+                m = m.squeeze(1)
+            if m.dim() == 3:
+                masks_np = (m.numpy() > 0).astype(np.uint8)
+            elif m.dim() == 2:
+                masks_np = (m.numpy() > 0).astype(np.uint8)[None, ...]
+            else:
+                raise ValueError(f"Unexpected obj_masks shape: {tuple(m.shape)}")
+
+        n_masks = masks_np.shape[0]
+
+        # Parse labels: usually arrives as a JSON string from Sam3 Image Segmentation
+        labels_list: List[str] = []
+        if labels is None or labels == "":
+            labels_list = [""] * n_masks
+        elif isinstance(labels, str):
+            try:
+                parsed = json.loads(labels)
+                if isinstance(parsed, list):
+                    labels_list = [str(x) for x in parsed]
+                else:
+                    labels_list = [str(parsed)] * n_masks
+            except json.JSONDecodeError:
+                labels_list = [labels] * n_masks
+        elif isinstance(labels, (list, tuple)):
+            labels_list = [str(x) for x in labels]
+        else:
+            labels_list = [str(labels)] * n_masks
+
+        # Pad / truncate labels to match the number of masks
+        if len(labels_list) < n_masks:
+            labels_list = labels_list + [""] * (n_masks - len(labels_list))
+        elif len(labels_list) > n_masks:
+            labels_list = labels_list[:n_masks]
+
+        # Normalize boxes to a plain Python list of [x1, y1, x2, y2]
+        boxes_list: List[List[float]] = []
+        if boxes is not None:
+            if isinstance(boxes, torch.Tensor):
+                boxes_list = boxes.detach().cpu().tolist()
+            elif isinstance(boxes, np.ndarray):
+                boxes_list = boxes.tolist()
+            elif isinstance(boxes, (list, tuple)):
+                boxes_list = [list(b) for b in boxes]
+        if len(boxes_list) < n_masks:
+            boxes_list = boxes_list + [[0.0, 0.0, 0.0, 0.0]] * (n_masks - len(boxes_list))
+
+        # Normalize scores to a list of floats
+        scores_list: List[float] = []
+        if scores is not None:
+            if isinstance(scores, torch.Tensor):
+                scores_list = [float(x) for x in scores.detach().cpu().tolist()]
+            elif isinstance(scores, np.ndarray):
+                scores_list = [float(x) for x in scores.tolist()]
+            elif isinstance(scores, (list, tuple)):
+                scores_list = [float(x) for x in scores]
+        if len(scores_list) < n_masks:
+            scores_list = scores_list + [0.0] * (n_masks - len(scores_list))
+
+        # Build per-object payload
+        objects_payload = []
+        ids_only = []
+        for i in range(n_masks):
+            box = [float(x) for x in boxes_list[i][:4]]
+            obj_id = make_obj_id(box, grid=int(id_grid))
+            mask_b64 = encode_mask_b64(masks_np[i])
+
+            obj = {
+                "id": obj_id,
+                "label": labels_list[i],
+                "box": box,
+                "score": float(scores_list[i]),
+                "mask_b64": mask_b64,
+            }
+            objects_payload.append(obj)
+            ids_only.append(obj_id)
+
+        # Compute image hash so VM2 can verify it works with the same source
+        try:
+            image_hash = hashlib.sha256(image.detach().cpu().numpy().tobytes()).hexdigest()
+        except Exception:
+            image_hash = ""
+
+        payload = {
+            "version": 1,
+            "image_w": int(img_w),
+            "image_h": int(img_h),
+            "image_hash": image_hash,
+            "id_grid": int(id_grid),
+            "objects": objects_payload,
+        }
+
+        results_text = json.dumps(payload, ensure_ascii=False)
+        ids_text = json.dumps(ids_only, ensure_ascii=False)
+
+        logger.info(
+            f"Sam3EncodeResultsToText: encoded {n_masks} object(s), "
+            f"image {img_w}x{img_h}, total payload {len(results_text)} chars"
+        )
+
+        return io.NodeOutput(results_text, ids_text)
+
+
+class Sam3DecodeMaskFromText(io.ComfyNode):
+    """Decode a single mask from a JSON text block produced by Sam3EncodeResultsToText.
+
+    On the second VM you do NOT need to load SAM3 - this node simply parses the
+    JSON, picks the requested object (by id, by label or by index) and returns
+    its mask along with metadata. Fully deterministic across machines.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="easy sam3DecodeMaskFromText",
+            display_name="SAM3 Decode Mask From Text",
+            category="EasyUse/Sam3",
+            description="Decode a saved SAM3 mask from a JSON text block (no model needed)",
+            inputs=[
+                io.String.Input(
+                    "results_text",
+                    display_name="results_text",
+                    multiline=True,
+                    tooltip="JSON text produced by SAM3 Encode Results To Text (or a single object JSON)",
+                    force_input=True,
+                ),
+                io.String.Input(
+                    "select_by",
+                    display_name="select_by",
+                    default="id",
+                    tooltip="Selection mode: 'id', 'label' or 'index'"
+                ),
+                io.String.Input(
+                    "selector",
+                    display_name="selector",
+                    default="",
+                    tooltip="Value to look up: obj_id string, label string, or index as text (e.g. '0')"
+                ),
+            ],
+            outputs=[
+                io.Mask.Output(
+                    "mask",
+                    display_name="mask",
+                    tooltip="Decoded mask [1, H, W]"
+                ),
+                io.String.Output(
+                    "label",
+                    display_name="label",
+                    tooltip="Label of the selected object"
+                ),
+                io.BBOX.Output(
+                    "box",
+                    display_name="box",
+                    tooltip="Bounding box of the selected object [x1, y1, x2, y2]"
+                ),
+                io.Float.Output(
+                    "score",
+                    display_name="score",
+                    tooltip="Confidence score of the selected object"
+                ),
+                io.String.Output(
+                    "obj_id",
+                    display_name="obj_id",
+                    tooltip="Content-based id of the selected object"
+                ),
+            ]
+        )
+
+    @classmethod
+    def execute(cls, results_text, select_by="id", selector="") -> io.NodeOutput:
+        if not results_text or not str(results_text).strip():
+            raise ValueError("results_text is empty")
+
+        try:
+            payload = json.loads(results_text)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"results_text is not valid JSON: {e}")
+
+        # Two accepted shapes:
+        #   1) full payload from Sam3EncodeResultsToText: {image_w, image_h, objects:[...]}
+        #   2) single object: {id, label, box, mask_b64, image_w?, image_h?}
+        if isinstance(payload, dict) and "objects" in payload:
+            img_w = int(payload.get("image_w", 0))
+            img_h = int(payload.get("image_h", 0))
+            objects = payload.get("objects") or []
+            if not objects:
+                raise ValueError("results_text contains no objects")
+
+            mode = (select_by or "id").strip().lower()
+            sel = (selector or "").strip()
+
+            chosen = None
+            if mode == "index":
+                if sel == "":
+                    idx = 0
+                else:
+                    try:
+                        idx = int(sel)
+                    except ValueError:
+                        raise ValueError(f"selector '{sel}' is not a valid integer for index mode")
+                if idx < 0 or idx >= len(objects):
+                    raise ValueError(
+                        f"index {idx} out of range. Available: 0-{len(objects) - 1}"
+                    )
+                chosen = objects[idx]
+            elif mode == "label":
+                # Case-insensitive label lookup; pick highest-score match
+                lo = sel.lower()
+                matches = [o for o in objects if str(o.get("label", "")).lower() == lo]
+                if not matches:
+                    raise ValueError(
+                        f"no object with label '{sel}'. Available labels: "
+                        f"{sorted({str(o.get('label','')) for o in objects})}"
+                    )
+                chosen = max(matches, key=lambda o: float(o.get("score", 0.0)))
+            else:  # 'id'
+                if not sel:
+                    raise ValueError("selector is empty for select_by='id'")
+                for o in objects:
+                    if str(o.get("id", "")) == sel:
+                        chosen = o
+                        break
+                if chosen is None:
+                    raise ValueError(
+                        f"no object with id '{sel}'. Available ids: "
+                        f"{[str(o.get('id','')) for o in objects]}"
+                    )
+        elif isinstance(payload, dict) and "mask_b64" in payload:
+            chosen = payload
+            img_w = int(payload.get("image_w", 0))
+            img_h = int(payload.get("image_h", 0))
+        else:
+            raise ValueError(
+                "Unsupported results_text shape. Expected an object with 'objects' "
+                "or a single object with 'mask_b64'."
+            )
+
+        if img_w <= 0 or img_h <= 0:
+            raise ValueError(
+                f"Invalid image_w/image_h in payload: {img_w}x{img_h}. "
+                "Cannot reshape mask without dimensions."
+            )
+
+        mask_np = decode_mask_b64(chosen["mask_b64"], img_h, img_w)
+        mask_tensor = torch.from_numpy(mask_np.astype(np.float32)).unsqueeze(0)
+
+        label = str(chosen.get("label", ""))
+        box = [float(x) for x in chosen.get("box", [0.0, 0.0, 0.0, 0.0])[:4]]
+        score = float(chosen.get("score", 0.0))
+        obj_id = str(chosen.get("id", ""))
+
+        logger.info(
+            f"Sam3DecodeMaskFromText: decoded mask for id='{obj_id}' label='{label}' "
+            f"shape={tuple(mask_tensor.shape)}"
+        )
+
+        return io.NodeOutput(mask_tensor, label, [box], score, obj_id)
 
 
 class StringToBBox(io.ComfyNode):

@@ -13,6 +13,8 @@ class Sam3Extension(ComfyExtension):
             Sam3GetObjectIds,
             Sam3GetObjectMask,
             Sam3ExtractMask,
+            Sam3EncodeResultsToText,
+            Sam3DecodeMaskFromText,
             StringToBBox,
             FramesEditor,
         ]
