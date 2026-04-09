@@ -2168,6 +2168,28 @@ class Sam3DecodeMaskFromText(io.ComfyNode):
                     display_name="obj_id",
                     tooltip="Content-based id of the selected object"
                 ),
+                # Vis-compatible outputs (same shapes as Sam3 Image Segmentation),
+                # so the decoded object can be wired straight into Sam3 Visualization.
+                io.Mask.Output(
+                    "obj_masks",
+                    display_name="obj_masks",
+                    tooltip="Mask in [N=1, 1, H, W] format - compatible with Sam3 Visualization"
+                ),
+                io.String.Output(
+                    "labels_json",
+                    display_name="labels_json",
+                    tooltip="Label as JSON [[\"label\"]] - compatible with Sam3 Visualization 'labels' input"
+                ),
+                io.Float.Output(
+                    "scores_batched",
+                    display_name="scores_batched",
+                    tooltip="Score as [[score]] - compatible with Sam3 Visualization 'scores' input"
+                ),
+                io.BBOX.Output(
+                    "boxes_batched",
+                    display_name="boxes_batched",
+                    tooltip="Box as [[[x1,y1,x2,y2]]] - compatible with Sam3 Visualization 'boxes' input"
+                ),
             ]
         )
 
@@ -2247,19 +2269,37 @@ class Sam3DecodeMaskFromText(io.ComfyNode):
             )
 
         mask_np = decode_mask_b64(chosen["mask_b64"], img_h, img_w)
+        # Single-object outputs: [1, H, W] for the plain `mask` output.
         mask_tensor = torch.from_numpy(mask_np.astype(np.float32)).unsqueeze(0)
+        # Vis-compatible mask: [N=1, 1, H, W] - mirrors Sam3 Image Segmentation `obj_masks`.
+        obj_masks_tensor = mask_tensor.unsqueeze(0)
 
         label = str(chosen.get("label", ""))
         box = [float(x) for x in chosen.get("box", [0.0, 0.0, 0.0, 0.0])[:4]]
         score = float(chosen.get("score", 0.0))
         obj_id = str(chosen.get("id", ""))
 
+        # Wrap into per-image batch format expected by Sam3 Visualization.
+        labels_json = json.dumps([[label]], ensure_ascii=False)
+        scores_batched = [[score]]
+        boxes_batched = [[box]]
+
         logger.info(
             f"Sam3DecodeMaskFromText: decoded mask for id='{obj_id}' label='{label}' "
             f"shape={tuple(mask_tensor.shape)}"
         )
 
-        return io.NodeOutput(mask_tensor, label, [box], score, obj_id)
+        return io.NodeOutput(
+            mask_tensor,
+            label,
+            [box],
+            score,
+            obj_id,
+            obj_masks_tensor,
+            labels_json,
+            scores_batched,
+            boxes_batched,
+        )
 
 
 class StringToBBox(io.ComfyNode):
